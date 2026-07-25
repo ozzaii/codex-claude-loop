@@ -484,6 +484,6 @@ if [ -n "${BASH_VERSION:-}" ] && [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then
   cmd="${1:-}"; shift || true
   case " $CL_CMDS " in
     *" ${cmd:-—} "*) "cl_$cmd" "$@" ;;
-    *) echo "usage: bash codex-claude-loop.sh {${CL_CMDS// /|}} ..." >&2; exit 2 ;;
+    *) echo "usage: bash ${0##*/} {${CL_CMDS// /|}} ..." >&2; exit 2 ;;
   esac
 fi
