@@ -7,7 +7,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
-LIB="${CL_LIB:-$ROOT/plugin/skills/codex-loop/lib/codex-loop.sh}"
+LIB="${CL_LIB:-$ROOT/plugin/skills/codex-claude-loop/lib/codex-claude-loop.sh}"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 ok()   { pass=$((pass+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
@@ -63,7 +63,7 @@ echo "do the thing" > "$TMP/brief.md"
 # shellcheck source=/dev/null
 . "$LIB"
 
-echo "== codex-loop smoke ($(basename "${BASH_VERSION:+bash}${ZSH_VERSION:+zsh}"))"
+echo "== codex-claude-loop smoke ($(basename "${BASH_VERSION:+bash}${ZSH_VERSION:+zsh}"))"
 
 cl_doctor >/dev/null 2>&1; check "doctor passes" "$?" "0"
 

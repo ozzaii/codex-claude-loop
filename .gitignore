@@ -3,5 +3,5 @@
 *.verdict
 *.session
 *.base.sha
-.codex-loop/
+.codex-claude-loop/
 node_modules/

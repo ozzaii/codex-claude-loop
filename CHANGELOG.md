@@ -14,4 +14,4 @@ already driven 45 gated waves across 20 lanes of a production codebase.
 - Verdict invalidation on re-plan and on `cl_revise`
 - New in extraction: `cl_doctor`, `cl_status`, `cl_revise`, `CL_LOCK_TIMEOUT`,
   repo-relative `CL_REPO`/`CL_STATE` defaults
-- Commands: `/codex-loop:wave`, `/codex-loop:status`, `/codex-loop:doctor`
+- Commands: `/codex-claude-loop:wave`, `/codex-claude-loop:status`, `/codex-claude-loop:doctor`

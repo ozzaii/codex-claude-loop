@@ -1,8 +1,8 @@
 ---
-description: Check the codex-loop substrate (codex CLI, jq, git, repo, verdict schema)
+description: Check the codex-claude-loop substrate (codex CLI, jq, git, repo, verdict schema)
 ---
 
-Load the `codex-loop` skill, source its lib, and run `cl_doctor`.
+Load the `codex-claude-loop` skill, source its lib, and run `cl_doctor`.
 
 Report each check plainly. If `codex` is missing, point at `npm install -g @openai/codex`
 then `codex login`. If the repo resolved is not the one the user means, tell them to set

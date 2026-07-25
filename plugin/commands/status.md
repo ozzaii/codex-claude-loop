@@ -1,8 +1,8 @@
 ---
-description: Show every codex-loop slug and where it stands (plan/review verdicts, base SHA)
+description: Show every codex-claude-loop slug and where it stands (plan/review verdicts, base SHA)
 ---
 
-Load the `codex-loop` skill, source its lib, and run `cl_status`.
+Load the `codex-claude-loop` skill, source its lib, and run `cl_status`.
 
 Then, for each slug that is not fully approved, say in one line what the next action is:
 plan needs reading, plan needs re-briefing, impl not run, diff needs review, or blocking

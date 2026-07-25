@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# codex-loop.sh — a gated plan → approve → implement → review loop around Codex CLI.
+# codex-claude-loop.sh — a gated plan → approve → implement → review loop around Codex CLI.
 #
 #   Claude plans (brief) → Codex plans (persistent thread) → Claude APPROVES the plan
 #   → Codex implements (SAME thread) → Claude REVIEWS the diff vs the plan → release.
@@ -23,7 +23,7 @@
 # ------------------------------------------------------------------ config ----
 # Default target repo: the git root of the current directory, else $PWD.
 CL_REPO="${CL_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-CL_STATE="${CL_STATE:-$HOME/.codex-loop/$(basename "$CL_REPO")}"
+CL_STATE="${CL_STATE:-$HOME/.codex-claude-loop/$(basename "$CL_REPO")}"
 CL_SKILL_DIR="${CL_SKILL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
 CL_VERDICT_SCHEMA="${CL_VERDICT_SCHEMA:-$CL_SKILL_DIR/schemas/verdict.schema.json}"
 CL_SANDBOX="${CL_SANDBOX:-workspace-write}"     # read-only|workspace-write|danger-full-access
@@ -46,7 +46,7 @@ umask 077
 # rejects it. shellcheck disable=SC2046 is intentional throughout this file.
 
 # Bash-3.2 safe (macOS default bash rejects printf %(..)T)
-_cl_log() { printf '[codex-loop %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+_cl_log() { printf '[codex-claude-loop %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 _cl_model_flag() { [ -n "$1" ] && printf -- '-m %s' "$1"; }
 # Extra writable roots for the sandbox (single path). Needed when CL_REPO is a LINKED
 # WORKTREE: commits write refs/objects into the parent repo's .git, outside the
@@ -322,13 +322,13 @@ cl_wave() {
 # cl_selfreview — have Codex tear apart THIS harness before you trust it.
 cl_selfreview() {
   codex exec -C "$CL_SKILL_DIR" -s read-only \
-    "Adversarially review lib/codex-loop.sh and SKILL.md in this dir. Find bugs \
+    "Adversarially review lib/codex-claude-loop.sh and SKILL.md in this dir. Find bugs \
 in the bash (quoting, locking, session-id capture, exec/resume flags for \
 codex-cli 0.144), unsafe defaults, and any way a gate can rubber-stamp. List \
 concrete fixes."
 }
 
-# Direct dispatch (bash codex-loop.sh <fn> args). Sourcing works too, but use bash —
+# Direct dispatch (bash codex-claude-loop.sh <fn> args). Sourcing works too, but use bash —
 # the guard below is zsh-safe (BASH_SOURCE unset under zsh won't blow up).
 if [ -n "${BASH_VERSION:-}" ] && [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then
   set -uo pipefail
@@ -336,6 +336,6 @@ if [ -n "${BASH_VERSION:-}" ] && [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then
   cmd="${1:-}"; shift || true
   case "$cmd" in
     plan|impl|wave|gate_plan|review_human|codex_gate|verdict|record_verdict|revise|status|doctor|selfreview) "cl_$cmd" "$@" ;;
-    *) echo "usage: bash codex-loop.sh {doctor|plan|gate_plan|record_verdict|impl|review_human|codex_gate|revise|verdict|status|wave|selfreview} ..." >&2; exit 2 ;;
+    *) echo "usage: bash codex-claude-loop.sh {doctor|plan|gate_plan|record_verdict|impl|review_human|codex_gate|revise|verdict|status|wave|selfreview} ..." >&2; exit 2 ;;
   esac
 fi

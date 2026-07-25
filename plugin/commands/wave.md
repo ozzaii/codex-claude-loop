@@ -3,12 +3,12 @@ description: Run one gated Codex wave — plan, you approve, Codex implements, y
 argument-hint: <slug> <brief.md>
 ---
 
-Run one full codex-loop wave for `$ARGUMENTS`.
+Run one full codex-claude-loop wave for `$ARGUMENTS`.
 
-Load the `codex-loop` skill and follow it exactly. Do not run `cl_wave` blindly — you
+Load the `codex-claude-loop` skill and follow it exactly. Do not run `cl_wave` blindly — you
 are the gate. Concretely:
 
-1. `source ${CLAUDE_PLUGIN_ROOT}/skills/codex-loop/lib/codex-loop.sh` (and run
+1. `source ${CLAUDE_PLUGIN_ROOT}/skills/codex-claude-loop/lib/codex-claude-loop.sh` (and run
    `cl_doctor` if this is the first wave in this session).
 2. If no brief file was given, write one first: goal, constraints, acceptance criteria,
    out-of-scope. A vague brief produces a vague plan and the loop can only be as good

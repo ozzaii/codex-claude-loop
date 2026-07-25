@@ -1,9 +1,9 @@
 ---
-name: codex-loop
+name: codex-claude-loop
 description: Use when driving a gated build loop where Claude orchestrates and Codex CLI implements — Claude plans and judges, Codex plans/implements from a persistent thread, with approve-the-plan and review-the-diff gates. For delegating serious multi-file work to Codex instead of one-shot prompts.
 ---
 
-# codex-loop — the gated Claude × Codex build loop
+# codex-claude-loop — the gated Claude × Codex build loop
 
 Claude is the principal orchestrator; it rarely types product code. Codex CLI does the
 hands-on implementation from **persistent threads**. The whole thing is bash around
@@ -44,8 +44,8 @@ plan(N+1)              [== read-only ==]  approve(N+1) ✓  → impl(N+1) starts
 
 ## How to run it
 
-`source ${CLAUDE_PLUGIN_ROOT}/skills/codex-loop/lib/codex-loop.sh` then use the phase
-functions, or call `bash lib/codex-loop.sh <phase> …` directly. Config via env
+`source ${CLAUDE_PLUGIN_ROOT}/skills/codex-claude-loop/lib/codex-claude-loop.sh` then use the phase
+functions, or call `bash lib/codex-claude-loop.sh <phase> …` directly. Config via env
 (`CL_REPO`, `CL_IMPL_MODEL`, `CL_PLAN_MODEL`, `CL_REVIEW_MODEL`, `CL_SANDBOX`).
 
 0. **First run:** `cl_doctor` (codex/jq/git present, repo + schema resolve).
@@ -92,5 +92,5 @@ the loop moving unattended — but a real orchestrator review is the standard.
 
 ## State
 
-`~/.codex-loop/<repo>/` — plans, verdicts, session ids, base SHAs, JSONL logs. Outside
+`~/.codex-claude-loop/<repo>/` — plans, verdicts, session ids, base SHAs, JSONL logs. Outside
 the repo so it never pollutes a tree Codex is writing. Override with `CL_STATE`.

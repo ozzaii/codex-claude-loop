@@ -1,4 +1,4 @@
-# codex-loop
+# codex-claude-loop
 
 **A gated build loop between Claude Code and Codex CLI.** Codex authors a plan, Claude
 approves it, Codex implements *that same plan from the same thread*, Claude reviews the
@@ -25,26 +25,26 @@ but nice" is a blocking finding rather than a shrug.
 ## Install
 
 ```bash
-/plugin marketplace add ozzaii/codex-loop
-/plugin install codex-loop@codex-loop
+/plugin marketplace add ozzaii/codex-claude-loop
+/plugin install codex-claude-loop@codex-claude-loop
 ```
 
 Requires [Codex CLI](https://developers.openai.com/codex/cli) ≥ 0.144 (`npm install -g
 @openai/codex && codex login`), plus `jq` and `git`. Then, in Claude Code:
 
 ```
-/codex-loop:doctor          # verify the substrate
-/codex-loop:wave auth-rl briefs/auth-rate-limit.md
-/codex-loop:status
+/codex-claude-loop:doctor          # verify the substrate
+/codex-claude-loop:wave auth-rl briefs/auth-rate-limit.md
+/codex-claude-loop:status
 ```
 
 Not on Claude Code? The harness is a plain script — `bash
-plugin/skills/codex-loop/lib/codex-loop.sh doctor` works from any shell.
+plugin/skills/codex-claude-loop/lib/codex-claude-loop.sh doctor` works from any shell.
 
 ## The loop, by hand
 
 ```bash
-source plugin/skills/codex-loop/lib/codex-loop.sh
+source plugin/skills/codex-claude-loop/lib/codex-claude-loop.sh
 
 cl_doctor                                  # codex/jq/git, repo, schema
 cl_plan  auth-rl briefs/auth-rl.md         # → auth-rl.plan.md + a persistent thread
@@ -58,7 +58,7 @@ cl_status
 ```
 
 Fully unattended (no human/Claude to judge): `cl_codex_gate <slug>` runs a Codex
-adversarial reviewer constrained by [`verdict.schema.json`](plugin/skills/codex-loop/schemas/verdict.schema.json)
+adversarial reviewer constrained by [`verdict.schema.json`](plugin/skills/codex-claude-loop/schemas/verdict.schema.json)
 — it emits `{verdict, summary, blocking[], plan_deviations[], nits[]}`, defaults to
 `revise` unless confident, and an `approve` carrying blocking items is auto-downgraded.
 
@@ -97,7 +97,7 @@ A gate that always approves is worse than no gate, so:
 | Env | Default | Notes |
 |---|---|---|
 | `CL_REPO` | git root of `$PWD` | the tree Codex writes |
-| `CL_STATE` | `~/.codex-loop/<repo>` | plans, verdicts, thread ids, logs — kept **outside** the repo |
+| `CL_STATE` | `~/.codex-claude-loop/<repo>` | plans, verdicts, thread ids, logs — kept **outside** the repo |
 | `CL_SANDBOX` | `workspace-write` | implementation sandbox |
 | `CL_PLAN_SANDBOX` / `CL_REVIEW_SANDBOX` | `read-only` | raise only on hosts where sandboxing itself fails |
 | `CL_IMPL_MODEL` / `CL_PLAN_MODEL` / `CL_REVIEW_MODEL` | codex default | e.g. a cheaper model to plan, a stronger one to review |
@@ -150,11 +150,11 @@ This space is crowded. Honest positioning:
 
 | | What it is | Use it when |
 |---|---|---|
-| [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc) | Official OpenAI plugin: `/codex:review`, `/codex:rescue`, background jobs | You want the primitives — delegate a task, get a review. **Composes fine with this**; codex-loop is the discipline you put on top |
+| [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc) | Official OpenAI plugin: `/codex:review`, `/codex:rescue`, background jobs | You want the primitives — delegate a task, get a review. **Composes fine with this**; codex-claude-loop is the discipline you put on top |
 | [skills-directory/skill-codex](https://github.com/skills-directory/skill-codex) | A skill that forwards a prompt to Codex | One-shot delegation, no gates |
 | [alexzh3/codex-orchestrator](https://github.com/alexzh3/codex-orchestrator) | Run-based orchestration with reports, journals, benchmarks (Python 3.10+) | You want run artifacts and reporting, and don't mind the Python dependency |
 | [iselur/relay](https://github.com/iselur/relay) | Autonomous backlog + cross-vendor review on a shared VM (tmux, Tailscale, sandboxed users) | You want unattended autonomy and will run infrastructure for it |
-| **codex-loop** | Two judgment gates, one persistent implementer thread, a writer lock, schema-checked verdicts — in bash, zero deps beyond `codex`/`jq`/`git` | You want the *loop discipline* itself, auditable in one file, and you want Claude to actually gate rather than rubber-stamp |
+| **codex-claude-loop** | Two judgment gates, one persistent implementer thread, a writer lock, schema-checked verdicts — in bash, zero deps beyond `codex`/`jq`/`git` | You want the *loop discipline* itself, auditable in one file, and you want Claude to actually gate rather than rubber-stamp |
 
 ## Provenance
 

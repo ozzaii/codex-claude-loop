@@ -12,11 +12,11 @@ step "smoke — zsh";   if command -v zsh >/dev/null; then zsh test/smoke.sh < /
 
 step "shellcheck"
 if command -v shellcheck >/dev/null; then
-  shellcheck -S error plugin/skills/codex-loop/lib/codex-loop.sh test/smoke.sh gates.sh; verdict $?
+  shellcheck -S error plugin/skills/codex-claude-loop/lib/codex-claude-loop.sh test/smoke.sh gates.sh; verdict $?
 else echo "(shellcheck not installed — skipped)"; fi
 
 step "manifests"
-for f in .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin/skills/codex-loop/schemas/verdict.schema.json; do
+for f in .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin/skills/codex-claude-loop/schemas/verdict.schema.json; do
   if command -v jq >/dev/null; then jq -e . "$f" >/dev/null && echo "  ok   $f" || { echo "  BAD  $f"; fail=1; }; fi
 done
 if command -v claude >/dev/null; then
