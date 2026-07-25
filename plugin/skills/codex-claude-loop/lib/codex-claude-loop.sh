@@ -303,9 +303,15 @@ _cl_codex_resume() {  # <slug> <label> <prompt>   — caller holds the writer lo
   _cl_require "${label}[$slug]" resume json out || return 2
   _cl_check_writable_roots || return 2
   sess="$(_cl_session "$slug")" || return 2
+  # Backgrounded ONLY to learn the child's pid, then waited on immediately, so the caller
+  # still blocks and still gets codex's exit status. That pid is what lets the next
+  # acquirer distinguish "the shell died" from "the writer died".
   codex exec $(_cl_model_flag "$CL_IMPL_MODEL") $(_cl_writable_flag) $(_cl_net_flag) \
     -C "$CL_REPO" -s "$CL_SANDBOX" --json -o "$CL_STATE/${slug}.${label}.md" \
-    resume "$sess" "$prompt" > "$CL_STATE/${slug}.${label}.jsonl" 2>&1
+    resume "$sess" "$prompt" > "$CL_STATE/${slug}.${label}.jsonl" 2>&1 &
+  local child=$!
+  [ -d "$CL_LOCK" ] && printf '%s\n' "$child" > "$CL_LOCK/child"
+  wait "$child"
 }
 
 # The review instruction both gates share. They differ only in their tail, so they cannot
@@ -377,6 +383,9 @@ cl_doctor() {
   local auth
   if auth="$(codex login status 2>&1)"; then
     case "$auth" in
+      # "Not logged in" CONTAINS "logged in", so the negative has to be tested first or a
+      # logged-out codex reads as authenticated. Some builds also exit 0 while saying it.
+      *[Nn]ot\ logged\ in*) printf '  MISS auth    codex says it is not logged in: %s\n' "$auth"; ok=1 ;;
       *[Ll]ogged\ in*) printf '  ok   auth    %s\n' "$auth" ;;
       *) printf '  warn auth    codex answered but not with a login state: %s\n' "$auth" ;;
     esac
@@ -435,7 +444,8 @@ EOF
   # base, and the marker saying an implementation of the OLD plan succeeded
   # carryover goes too: those items were raised against a plan that no longer exists
   rm -f "$CL_STATE/${slug}.plan.verdict" "$CL_STATE/${slug}.review.verdict" \
-        "$CL_STATE/${slug}.base.sha" "$CL_STATE/${slug}.impl.ok" "$CL_STATE/${slug}.carryover.md"
+        "$CL_STATE/${slug}.base.sha" "$CL_STATE/${slug}.impl.ok" "$CL_STATE/${slug}.carryover.md" \
+        "$CL_STATE/${slug}.shown.plan" "$CL_STATE/${slug}.shown.tree"
   _cl_log "plan[$slug]: plan -> $out ; thread $sid (verdicts, base, impl marker and carryover cleared)"
   printf '%s\n' "$out"
 }
@@ -448,6 +458,10 @@ cl_gate_plan() {
   local slug="${1:-}"
   _cl_slug_ok "$slug" || return 2
   cat "$CL_STATE/${slug}.plan.md" || return 2
+  # Remember WHAT WAS SHOWN. Without this the approval binds to whatever exists when the
+  # verdict is recorded, so a plan that moved between reading and approving is approved
+  # unread. Same hole on the review side below.
+  _cl_plan_sha "$slug" > "$CL_STATE/${slug}.shown.plan" 2>/dev/null
   cl_plan_approved "$slug"
 }
 cl_record_verdict() {  # <slug> <phase:plan|review> <approve|revise> [notes]
@@ -460,11 +474,23 @@ cl_record_verdict() {  # <slug> <phase:plan|review> <approve|revise> [notes]
   bsha="$(_cl_base "$slug" || true)"
   tid="$(_cl_tree_id || true)"
   # An approval must be bindable to what was judged. Refuse to record one that cannot be.
+  # It must also describe the state that was actually READ: cl_gate_plan and cl_review_human
+  # record what they showed, and an approval for anything else is refused rather than
+  # silently binding to whatever the tree happens to be at record time.
+  local shown
   if [ "$verdict" = approve ]; then
     case "$phase" in
-      plan)   [ -n "$psha" ] || { _cl_log "record_verdict: cannot hash the plan, so this approval could never be verified — refusing"; return 2; } ;;
+      plan)   [ -n "$psha" ] || { _cl_log "record_verdict: cannot hash the plan, so this approval could never be verified — refusing"; return 2; }
+              shown="$(cat "$CL_STATE/${slug}.shown.plan" 2>/dev/null)"
+              if [ -n "$shown" ] && [ "$shown" != "$psha" ]; then
+                _cl_log "record_verdict: the plan changed after you read it — re-read $CL_STATE/${slug}.plan.md before approving"; return 2
+              fi ;;
       review) [ -n "$bsha" ] || { _cl_log "record_verdict: no base sha (did impl run?) — refusing to record a review approval"; return 2; }
-              [ -n "$tid"  ] || { _cl_log "record_verdict: cannot identify the tree — refusing to record a review approval"; return 2; } ;;
+              [ -n "$tid"  ] || { _cl_log "record_verdict: cannot identify the tree — refusing to record a review approval"; return 2; }
+              shown="$(cat "$CL_STATE/${slug}.shown.tree" 2>/dev/null)"
+              if [ -n "$shown" ] && [ "$shown" != "$tid" ]; then
+                _cl_log "record_verdict: the tree changed after the review you are approving — re-run cl_review_human $slug"; return 2
+              fi ;;
     esac
   fi
   jq -n --arg v "$verdict" --arg s "$notes" --arg p "$psha" --arg b "$bsha" --arg d "$tid" \
@@ -491,7 +517,7 @@ cl_impl() {
   _cl_session "$slug" >/dev/null || return 2
   plantext="$(cat "$CL_STATE/${slug}.plan.md")" || return 2
   # the implementation starts over: any earlier review approval and success marker are void
-  rm -f "$CL_STATE/${slug}.review.verdict" "$CL_STATE/${slug}.impl.ok"
+  rm -f "$CL_STATE/${slug}.review.verdict" "$CL_STATE/${slug}.impl.ok" "$CL_STATE/${slug}.shown.tree"
   _cl_lock_acquire "$CL_STATE/${slug}.impl.jsonl" || return 2   # one writer only (mkdir lock; macOS has no flock)
   _cl_log "impl[$slug]: implementing approved plan (writer lock held)"
   local dirty; dirty="$(git -C "$CL_REPO" status --porcelain=v1 -uall 2>/dev/null | wc -l | tr -d ' ')"
@@ -523,10 +549,12 @@ cl_revise() {
   local slug="${1:-}" notes="${2:-}" rc
   _cl_slug_ok "$slug" || return 2
   [ -n "$notes" ] || { _cl_log "usage: cl_revise <slug> \"<blocking items>\""; return 2; }
-  # Findings are DATA. They are written by a reviewer that read arbitrary repo content, and
-  # they get replayed verbatim into every later judge. A line starting with the fence this
-  # harness uses to delimit its own sections could close the BLOCKING block early and write
-  # instructions of its own into a workspace-write thread, so it is refused at the door.
+  # A finding that starts a line with this harness's own fence breaks the structure of the
+  # prompt it lands in, so it is refused. Be clear about what this is NOT: it is not a
+  # defence against prompt injection. The items and the instructions are the same kind of
+  # text at the same level, so indentation, a heading, an XML tag or plain English work
+  # just as well as the fence. Treat every finding as text a reviewer chose, and keep a
+  # human between an untrusted reviewer and a workspace-write thread.
   case "$notes" in
     "====="*|*"$(printf '\n=====')"*)
       _cl_log "revise[$slug] REFUSED: a blocking item starts a line with '=====', the fence this harness uses to delimit sections in the prompt it sends. Findings are data, not instructions. Rewrite the item without a leading fence."
@@ -536,7 +564,7 @@ cl_revise() {
   _cl_require "revise[$slug]" resume json out || return 2
   _cl_session "$slug" >/dev/null || return 2
   # the tree is about to move: the review approval and the success marker are void
-  rm -f "$CL_STATE/${slug}.review.verdict" "$CL_STATE/${slug}.impl.ok"
+  rm -f "$CL_STATE/${slug}.review.verdict" "$CL_STATE/${slug}.impl.ok" "$CL_STATE/${slug}.shown.tree"
   _cl_lock_acquire "$CL_STATE/${slug}.revise.jsonl" || return 2
   _cl_log "revise[$slug]: sending blocking items back to the implementer thread"
   _cl_codex_resume "$slug" revise \
@@ -574,6 +602,7 @@ cl_review_human() {
   base="$(_cl_base "$slug")" || { _cl_log "review[$slug] REFUSED: no base sha"; return 2; }
   _cl_no_writer_running "review[$slug]" || return 2
   _cl_compat_check
+  _cl_tree_id > "$CL_STATE/${slug}.shown.tree" 2>/dev/null   # what this review is about to judge
   codex exec $(_cl_model_flag "$CL_REVIEW_MODEL") -C "$CL_REPO" -s "$CL_REVIEW_SANDBOX" - <<EOF
 $(_cl_review_prompt "$slug" "$base")
 Severity-ranked findings with file:line + a concrete fix each; end with a verdict:
@@ -655,7 +684,7 @@ cl_release() {
 # releases the lock explicitly.
 CL_DISPATCHED="${CL_DISPATCHED:-0}"
 _cl_lock_acquire() {   # [phase-log-path]
-  local waited=0 holder stale logf quiet
+  local waited=0 holder stale logf child
   local mylog="${1:-}"
   case "$CL_LOCK" in "$CL_STATE"/*) ;; *) _cl_log "refusing to use a lock outside the state dir: $CL_LOCK"; return 1 ;; esac
   while ! mkdir "$CL_LOCK" 2>/dev/null; do
@@ -666,21 +695,28 @@ _cl_lock_acquire() {   # [phase-log-path]
       # alone lets a second writer in beside a live orphan, which is the one thing this
       # lock exists to prevent. So ask the phase log the dead holder was writing whether
       # anything is still coming out of it.
-      logf=''; read -r logf 2>/dev/null < "$CL_LOCK/log"
-      if [ -n "$logf" ] && [ -f "$logf" ]; then
-        # capture, then match: `find | grep -q` under pipefail is the SIGPIPE trap
-        quiet="$(find "$logf" -mmin +"${CL_LOCK_QUIET_MIN:-5}" 2>/dev/null)"
-        if [ -z "$quiet" ]; then
-          [ "$waited" -eq 0 ] && _cl_log "lock: holder pid=$holder is gone, but $logf is still being written — waiting rather than joining it"
-          sleep 5; waited=$((waited+5))
-          if [ "$waited" -ge "${CL_LOCK_TIMEOUT:-7200}" ]; then _cl_log "lock: gave up after ${CL_LOCK_TIMEOUT:-7200}s (orphaned writer still active on $logf)"; return 1; fi
-          continue
-        fi
+      # A silent log is NOT evidence that the writer is gone: codex goes quiet while it
+      # runs tests or blocks on I/O. v0.5.0 reclaimed on log age and would therefore admit
+      # a second writer beside a live orphan, which is the failure this lock exists for.
+      # Only a dead WRITER authorizes reclaim, so we check the pid we recorded for it.
+      child=''; read -r child 2>/dev/null < "$CL_LOCK/child"
+      logf='';  read -r logf  2>/dev/null < "$CL_LOCK/log"
+      if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+        [ "$waited" -eq 0 ] && _cl_log "lock: bookkeeper pid=$holder is gone but its codex child pid=$child is ALIVE${logf:+ (writing $logf)} — waiting rather than joining it"
+        sleep 5; waited=$((waited+5))
+        if [ "$waited" -ge "${CL_LOCK_TIMEOUT:-7200}" ]; then _cl_log "lock: gave up after ${CL_LOCK_TIMEOUT:-7200}s (orphaned writer pid=$child still alive)"; return 1; fi
+        continue
+      fi
+      if [ -z "$child" ]; then
+        # Nothing recorded the writer, so nothing here can prove it is gone. Guessing is
+        # what got us the last bug; hand it to a human instead of picking an answer.
+        _cl_log "lock: holder pid=$holder is gone and no writer pid was recorded, so this lock cannot be cleared safely from here."
+        _cl_log "lock: check for a running codex (ps ax | grep 'codex exec'), then run: cl_lock_recover"
+        return 1
       fi
       stale="$CL_LOCK.stale.$$.$waited"
       if mv "$CL_LOCK" "$stale" 2>/dev/null; then
-        if [ -n "$logf" ]; then _cl_log "lock: stale holder pid=$holder — reclaimed, its log went quiet"
-        else _cl_log "lock: stale holder pid=$holder — reclaimed UNVERIFIED (it recorded no phase log)"; fi
+        _cl_log "lock: reclaimed — bookkeeper pid=$holder and writer pid=$child are both gone"
         rm -rf "$stale"
       fi
       continue                       # loser of the race just retries mkdir
@@ -700,6 +736,20 @@ _cl_lock_acquire() {   # [phase-log-path]
   fi
   return 0
 }
+# cl_lock_recover — the only way to clear a lock whose writer cannot be proven dead. It
+# still refuses while anything it can identify is alive; the operator supplies the judgment
+# the harness cannot.
+cl_lock_recover() {
+  local holder='' child=''
+  [ -d "$CL_LOCK" ] || { _cl_log "recover: no lock held"; return 0; }
+  read -r holder 2>/dev/null < "$CL_LOCK/pid"
+  read -r child  2>/dev/null < "$CL_LOCK/child"
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then _cl_log "recover REFUSED: bookkeeper pid=$holder is alive"; return 2; fi
+  if [ -n "$child" ]  && kill -0 "$child"  2>/dev/null; then _cl_log "recover REFUSED: writer pid=$child is alive"; return 2; fi
+  rm -rf "$CL_LOCK" 2>/dev/null
+  _cl_log "recover: lock cleared (bookkeeper=${holder:-none} writer=${child:-none}) — you asserted no codex is writing this tree"
+}
+
 _cl_lock_release() {
   local holder=''
   read -r holder 2>/dev/null < "$CL_LOCK/pid"
@@ -782,7 +832,7 @@ in the bash (quoting, locking, session-id capture, exec/resume flags for codex-c
 
 # Direct dispatch (bash codex-claude-loop.sh <fn> args). Sourcing works too, but use bash —
 # the guard below is zsh-safe (BASH_SOURCE unset under zsh won't blow up).
-CL_CMDS="doctor plan gate_plan record_verdict impl review_human codex_gate revise verdict status release wave selfreview"
+CL_CMDS="doctor plan gate_plan record_verdict impl review_human codex_gate revise verdict status release wave lock_recover selfreview"
 if [ -n "${BASH_VERSION:-}" ] && [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then
   set -uo pipefail
   CL_DISPATCHED=1          # now the lock may own the shell's EXIT/INT traps

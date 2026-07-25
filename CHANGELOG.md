@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.0 — 2026-07-25
+
+Codex reviewed v0.5.0 and opened with "not release-ready" again. Three of its findings held
+up, and one of them was against the fix shipped the release before.
+
+**A silent log is not a dead writer, so v0.5.0's lock was still wrong.** Codex goes quiet
+while it runs tests or blocks on I/O, and reclaiming on log age would admit a second writer
+beside a live orphan — the exact failure 0.5.0 claimed to close. Age no longer authorizes
+anything. `_cl_codex_resume` records the pid of the codex child it launches, and a lock is
+reclaimed only when the bookkeeper **and** that writer are both gone. When no writer pid was
+recorded, nothing here can prove the tree is free, so the lock refuses to clear itself and
+points at the new `cl_lock_recover`, which still refuses while anything it can identify is
+alive. Guessing is what produced the bug it replaces.
+
+**An approval described the state at record time, not the state that was read.** Read a
+plan, get distracted, approve after it changed, and the approval covered text nobody read.
+`cl_gate_plan` and `cl_review_human` now record what they showed, and `cl_record_verdict`
+refuses an approval that does not match it.
+
+**`cl_doctor` read a logged-out codex as logged in.** "Not logged in" contains "logged in",
+and the pattern matched the positive first.
+
+**The fence check is not injection defence, and no longer claims to be.** Findings and
+instructions are the same kind of text at the same level, so a heading or plain English
+does what the fence does. The check stays because a fence at column zero breaks the
+prompt's structure. The claim around it is gone.
+
+**Rejected from the same review:** the report's lead critical said `_cl_tree_id` always
+fails because git rejects a zero-byte index. On git 2.50.1, the version it named, that
+`read-tree` returns 0. It reasoned from git's source instead of running it, and the 75
+green assertions were already evidence against it.
+
+- 72 → 75 assertions
+
 ## 0.5.0 — 2026-07-25
 
 Four items from the landscape scan, each the smaller version its own skeptic argued for.

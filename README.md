@@ -109,7 +109,10 @@ A gate that always approves is worse than no gate.
   approval stops counting, because the verdict carries the plan's hash. A plan that
   cannot be hashed at all (deleted file, no sha256 tool) also voids it, rather than
   reading as "no mismatch found"
-- `cl_record_verdict` refuses to record an approval it could never verify later
+- `cl_record_verdict` refuses to record an approval it could never verify later, and
+  refuses one that does not describe what you were shown: the plan gate and the review
+  record what they printed, so a plan or a tree that moved between reading and approving
+  is refused instead of being approved unread
 - `cl_impl` refuses without a stored thread id, and never falls back to `resume --last`
 - review refuses when no implementation succeeded, and while a writer holds the lock
 - `cl_release` refuses unless the review approved *this* tree: it compares the base sha
@@ -127,12 +130,15 @@ A gate that always approves is worse than no gate.
   `blocking` that is not an array is refused outright rather than counted as zero
 - a second `cl_impl` waits on the lock. A stale lock is reclaimed by renaming it, so two
   waiters cannot both reclaim, and only the owning pid may release
-- a lock whose holder pid is dead is reclaimed only once the phase log that holder was
-  writing has gone quiet. A dead bookkeeper does not mean a dead writer: kill the shell and
-  its `codex exec` child keeps writing
+- a lock is reclaimed only once the recorded **writer** pid is gone, not merely the shell
+  that launched it. A silent log is not evidence: codex goes quiet while it runs tests. If
+  no writer pid was recorded, the lock refuses to clear itself and points at
+  `cl_lock_recover`, which still refuses while anything it can identify is alive
 - `cl_revise` refuses a blocking item that starts a line with `=====`, the fence the
-  harness uses to delimit its own sections. Findings are data, and data that can forge a
-  boundary can write instructions
+  harness uses to delimit its sections, because such an item breaks the prompt's structure.
+  This is not injection defence: findings and instructions are the same kind of text at the
+  same level, so a heading or plain English does the same job. Keep a human between an
+  untrusted reviewer and a `workspace-write` thread
 
 ## Surviving a Codex update
 
@@ -160,7 +166,6 @@ The CLI moves, and a moved flag used to mean a lane that died silently into its 
 | `CL_WRITABLE_ROOTS` | | needed when `CL_REPO` is a linked worktree |
 | `CL_NET` | | `1` grants the sandbox network for test gates |
 | `CL_LOCK_TIMEOUT` | `7200` | seconds to wait for the writer lock |
-| `CL_LOCK_QUIET_MIN` | `5` | minutes a dead holder's phase log must be idle before its lock is reclaimed |
 
 ## Field notes
 

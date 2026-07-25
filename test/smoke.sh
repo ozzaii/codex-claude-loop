@@ -168,6 +168,12 @@ check "a failed gate leaves NO standing approval" "$(cl_verdict w1 review)" ""
 
 # ---------------------------------------------------------------- gate 2 use --
 cl_release w1 >/dev/null 2>&1; check "release refuses without a review approval" "$?" "2"
+cl_review_human w1 >/dev/null 2>&1                      # records what this review judged
+printf 'a change nobody reviewed\n' >> "$CL_REPO/IMPLEMENTED.txt"
+cl_record_verdict w1 review approve "clean" >/dev/null 2>&1
+check "approving a tree that moved since the review is refused" "$?" "2"
+git -C "$CL_REPO" checkout -- IMPLEMENTED.txt 2>/dev/null || printf 'implemented\n' > "$CL_REPO/IMPLEMENTED.txt"
+cl_review_human w1 >/dev/null 2>&1
 cl_record_verdict w1 review approve "clean"
 cl_release w1 >/dev/null 2>&1; check "release passes when both gates hold" "$?" "0"
 echo "someone edited the tree afterwards" >> "$CL_REPO/IMPLEMENTED.txt"
@@ -316,32 +322,30 @@ bash "$LIB" plan >/dev/null 2>&1;        check "dispatched verb with no args ret
 # ------------------------------------------------------------- writer lock ----
 cl_record_verdict w1 plan approve "re-approved for the lock tests"
 
-mkdir -p "$CL_STATE/impl.lock.d"; echo 999999 > "$CL_STATE/impl.lock.d/pid"   # dead pid
-cl_impl w1 >/dev/null 2>&1; check "stale lock holder reclaimed" "$?" "0"
-
-mkdir -p "$CL_STATE/impl.lock.d"; echo $$ > "$CL_STATE/impl.lock.d/pid"       # live pid
-CL_LOCK_TIMEOUT=1 cl_impl w1 >/dev/null 2>&1; check "live lock holder blocks impl" "$?" "2"
-rm -rf "$CL_STATE/impl.lock.d"
-
-# A dead holder pid means the bookkeeper died, not that its codex child did. Reclaiming on
-# the pid alone lets a second writer in beside a live orphan.
+# A dead bookkeeper does not mean a dead writer. Only the recorded writer pid decides.
 mkdir -p "$CL_STATE/impl.lock.d"
 echo 999999 > "$CL_STATE/impl.lock.d/pid"
-echo "$CL_STATE/orphan.jsonl" > "$CL_STATE/impl.lock.d/log"
-: > "$CL_STATE/orphan.jsonl"                                  # touched now: still writing
+sleep 60 & live=$!                                   # stand-in for a live orphaned codex
+echo "$live" > "$CL_STATE/impl.lock.d/child"
 CL_LOCK_TIMEOUT=1 cl_impl w1 >/dev/null 2>&1
-check "a dead holder is NOT reclaimed while its phase log is fresh" "$?" "2"
+check "a live orphaned writer is NOT joined by a second one" "$?" "2"
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
 
-touch -t 202001010000 "$CL_STATE/orphan.jsonl"                # gone quiet
+echo 999999 > "$CL_STATE/impl.lock.d/child"          # both gone now
 cl_impl w1 >/dev/null 2>&1
-check "a dead holder IS reclaimed once its phase log went quiet" "$?" "0"
+check "a lock is reclaimed once bookkeeper AND writer are gone" "$?" "0"
 
-mkdir -p "$CL_STATE/impl.lock.d"; echo 999999 > "$CL_STATE/impl.lock.d/pid"   # no log recorded
-lockmsg="$(cl_impl w1 2>&1 >/dev/null)"
-case "$lockmsg" in
-  *UNVERIFIED*) ok  "a lock with no recorded log says so when it reclaims" ;;
-  *)            bad "a lock with no recorded log says so when it reclaims" ;;
-esac
+mkdir -p "$CL_STATE/impl.lock.d"; echo 999999 > "$CL_STATE/impl.lock.d/pid"   # no writer recorded
+CL_LOCK_TIMEOUT=1 cl_impl w1 >/dev/null 2>&1
+check "a lock with no recorded writer refuses instead of guessing" "$?" "2"
+[ -d "$CL_STATE/impl.lock.d" ] && ok "that lock is left in place for a human" || bad "that lock is left in place for a human"
+
+sleep 60 & live=$!; echo "$live" > "$CL_STATE/impl.lock.d/child"
+cl_lock_recover >/dev/null 2>&1; check "recover refuses while the writer is alive" "$?" "2"
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+cl_lock_recover >/dev/null 2>&1; check "recover clears a lock once nothing is alive" "$?" "0"
+[ -d "$CL_STATE/impl.lock.d" ] && bad "recover removed the lock" || ok "recover removed the lock"
+
 _cl_lock_release
 [ -d "$CL_STATE/impl.lock.d" ] && bad "owner may release its own lock" || ok "owner may release its own lock"
 

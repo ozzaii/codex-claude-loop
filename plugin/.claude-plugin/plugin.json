@@ -1,6 +1,6 @@
 {
   "name": "codex-claude-loop",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Gated Claude x Codex build loop: Codex plans and implements from one persistent thread, Claude approves the plan and reviews the diff.",
   "author": {
     "name": "Kaan Ozkan",
