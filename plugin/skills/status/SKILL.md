@@ -1,5 +1,7 @@
 ---
+name: status
 description: Show every codex-claude-loop slug and where it stands (plan/review gates, impl marker, base)
+allowed-tools: Bash, Read
 ---
 
 Load the `codex-claude-loop` skill, source its lib, and run `cl_status`.

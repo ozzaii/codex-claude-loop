@@ -1,6 +1,8 @@
 ---
+name: wave
 description: Run one gated Codex wave — plan, you approve, Codex implements, you review
 argument-hint: <slug> <brief.md>
+allowed-tools: Bash, Read, Write
 ---
 
 Load the `codex-claude-loop` skill and run one wave for `$ARGUMENTS`, following the

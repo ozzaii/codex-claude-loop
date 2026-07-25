@@ -1,5 +1,7 @@
 ---
+name: doctor
 description: Check the codex-claude-loop substrate (codex CLI, jq, git, repo, verdict schema)
+allowed-tools: Bash, Read
 ---
 
 Load the `codex-claude-loop` skill, source its lib, and run `cl_doctor`.
