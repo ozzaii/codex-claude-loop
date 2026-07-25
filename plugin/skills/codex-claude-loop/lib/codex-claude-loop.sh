@@ -56,14 +56,64 @@ _cl_writable_flag() { [ -n "$CL_WRITABLE_ROOTS" ] && printf -- '-c sandbox_works
 # needed for test gates that talk to a local service.
 _cl_net_flag() { [ -n "$CL_NET" ] && printf -- '-c sandbox_workspace_write.network_access=true'; }
 
-# Capture the codex thread id from a --json event stream. 0.144.x emits exactly
-# {"type":"thread.started","thread_id":"<uuid>"} — parse ONLY that; rc 1 if absent.
-_cl_grab_session() {  # <jsonl-file>  -> prints uuid, rc 1 when missing
-  local id
+# ------------------------------------------------- codex-cli compatibility ----
+# The CLI moves. This harness depends on four things: `exec`, `--json`, `-o`, and
+# `exec resume`. Everything below degrades loudly instead of dying silently when one
+# of them shifts. Families this harness has been exercised against:
+CL_CODEX_TESTED="${CL_CODEX_TESTED:-0.144 0.145}"
+
+_cl_codex_version() { codex --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1; }
+_cl_codex_family()  { _cl_codex_version | cut -d. -f1,2; }
+# Probe `codex exec --help` for a capability. ANY of the given spellings counts, so a
+# renamed flag does not read as a lost capability. Deliberately not a pipeline: `grep -q`
+# closes the pipe on its first match, and under `set -o pipefail` (which the dispatcher
+# sets) the SIGPIPE'd writer turns a HIT into a MISS.
+_cl_has_flag() {   # <pattern> [alt-pattern...]   cheap: --help, no model call
+  local help pat
+  help="$(codex exec --help 2>&1)" || return 1
+  for pat in "$@"; do
+    case "$help" in *"$pat"*) return 0 ;; esac
+  done
+  return 1
+}
+
+_cl_compat_check() {   # warns once per shell; never blocks
+  [ -n "${_CL_COMPAT_DONE:-}" ] && return 0
+  _CL_COMPAT_DONE=1
+  local fam; fam="$(_cl_codex_family)"
+  if [ -z "$fam" ]; then
+    _cl_log "compat: cannot read 'codex --version' — run cl_doctor before trusting a lane"
+    return 0
+  fi
+  case " $CL_CODEX_TESTED " in *" $fam "*) return 0 ;; esac
+  _cl_log "compat: codex $fam is outside the tested set ($CL_CODEX_TESTED) — run cl_doctor;"
+  _cl_log "compat: if a phase dies within seconds, the CLI's flags moved (see README field notes)"
+}
+
+# Capture the codex thread id from a --json event stream.
+#   tier 1 — 0.144/0.145 shape: {"type":"thread.started","thread_id":"<uuid>"}
+#   tier 2 — same idea, drifted key or event name (session.created / session_configured)
+#   tier 3 — any line carrying a thread/session/conversation id
+# Tiers 2 and 3 log that they fired, so schema drift shows up in the log instead of
+# silently resuming the wrong thread.
+_cl_grab_session() {  # <jsonl-file>  -> prints id, rc 1 when missing
+  local id json
   # grep -a '^{' first: codex interleaves non-JSON stderr lines (ANSI ERROR spam)
   # into the jsonl and jq aborts at the first invalid line — seen live.
-  id="$(grep -a '^{' "$1" 2>/dev/null | jq -r 'select(.type=="thread.started") | .thread_id' 2>/dev/null | head -1)"
+  json="$(grep -a '^{' "$1" 2>/dev/null)"
+  [ -n "$json" ] || return 1
+
+  id="$(printf '%s\n' "$json" | jq -r 'select(.type=="thread.started") | .thread_id // empty' 2>/dev/null | head -1)"
+  case "$id" in ""|null) ;; *) printf '%s\n' "$id"; return 0 ;; esac
+
+  id="$(printf '%s\n' "$json" | jq -r '
+        select((.type // "") | test("thread\\.started|session\\.created|session_configured|thread_started"))
+        | (.thread_id // .session_id // .conversation_id // .thread.id // .session.id // empty)' 2>/dev/null | head -1)"
+  case "$id" in ""|null) ;; *) _cl_log "compat: thread id came from a DRIFTED event shape (tier 2) — codex $(_cl_codex_version)"; printf '%s\n' "$id"; return 0 ;; esac
+
+  id="$(printf '%s\n' "$json" | jq -r '(.thread_id // .session_id // .conversation_id // empty)' 2>/dev/null | head -1)"
   case "$id" in ""|null) return 1 ;; esac
+  _cl_log "compat: thread id scavenged from an unrecognised stream (tier 3) — verify the next resume lands"
   printf '%s\n' "$id"
 }
 
@@ -95,6 +145,12 @@ _cl_lock_release() {
 }
 
 # ------------------------------------------------------------------ doctor ----
+_cl_doctor_flag() {   # <label> <pattern...>
+  local label="$1"; shift
+  if _cl_has_flag "$@"; then printf '  ok   flag    codex exec %s\n' "$label"; return 0; fi
+  printf '  MISS flag    codex exec %s — this codex cannot run the loop as written\n' "$label"
+  return 1
+}
 # cl_doctor — verify the substrate before trusting the loop.
 cl_doctor() {
   local ok=0
@@ -102,7 +158,19 @@ cl_doctor() {
     if command -v "$bin" >/dev/null 2>&1; then printf '  ok   %-6s %s\n' "$bin" "$(command -v $bin)"
     else printf '  MISS %-6s not on PATH\n' "$bin"; ok=1; fi
   done
-  printf '  codex version: %s\n' "$(codex --version 2>/dev/null || echo '?')"
+  local ver fam; ver="$(_cl_codex_version)"; fam="$(_cl_codex_family)"
+  printf '  codex version: %s\n' "${ver:-?}"
+  case " $CL_CODEX_TESTED " in
+    *" ${fam:-none} "*) printf '  ok   compat  %s is a tested family\n' "$fam" ;;
+    *) printf '  warn compat  %s is outside the tested set (%s) — the probes below are what matter\n' "${fam:-unknown}" "$CL_CODEX_TESTED" ;;
+  esac
+  # Probe the four things the loop actually depends on. A missing flag here is the
+  # difference between a clear message and a lane that dies silently into its log.
+  _cl_doctor_flag --json            --json                              || ok=1
+  _cl_doctor_flag --output-schema   --output-schema                     || ok=1
+  _cl_doctor_flag -o                "-o," "--output-last-message"       || ok=1
+  if codex exec resume --help >/dev/null 2>&1; then printf '  ok   verb    codex exec resume\n'
+  else printf '  MISS verb    codex exec resume — persistent threads unavailable\n'; ok=1; fi
   printf '  repo:   %s\n' "$CL_REPO"
   printf '  state:  %s\n' "$CL_STATE"
   printf '  schema: %s%s\n' "$CL_VERDICT_SCHEMA" "$([ -f "$CL_VERDICT_SCHEMA" ] || echo '  (MISSING)')"
@@ -120,6 +188,7 @@ cl_plan() {
   local slug="$1" brief="$2"
   [ -n "$slug" ] && [ -f "${brief:-}" ] || { _cl_log "usage: cl_plan <slug> <brief.md>"; return 2; }
   local out="$CL_STATE/${slug}.plan.md" sess="$CL_STATE/${slug}.session" jl="$CL_STATE/${slug}.plan.jsonl"
+  _cl_compat_check
   _cl_log "plan[$slug]: codex authoring execution plan from $brief"
   codex exec $(_cl_model_flag "$CL_PLAN_MODEL") -C "$CL_REPO" -s "$CL_PLAN_SANDBOX" --json \
     -o "$out" - < <(cat <<EOF
@@ -180,6 +249,8 @@ cl_impl() {
   [ "$(cl_verdict "$slug" plan)" = approve ] || { _cl_log "impl[$slug] REFUSED: plan not approved (cl_record_verdict $slug plan approve first)"; return 2; }
   sess="$(cat "$CL_STATE/${slug}.session" 2>/dev/null)"
   [ -n "$sess" ] || { _cl_log "impl[$slug] REFUSED: no stored session id — re-run cl_plan (never resume --last: another thread may be newer)"; return 2; }
+  _cl_compat_check
+  codex exec resume --help >/dev/null 2>&1 || { _cl_log "impl[$slug] REFUSED: this codex has no 'exec resume' — the plan thread cannot be resumed, and implementing from a cold prompt is not this loop. Run cl_doctor."; return 2; }
   _cl_lock_acquire || return 2    # one writer only (mkdir lock; macOS has no flock)
   _cl_log "impl[$slug]: implementing approved plan (writer lock held, session $sess)"
   if ! git -C "$CL_REPO" diff --quiet 2>/dev/null; then
@@ -228,6 +299,8 @@ cl_codex_gate() {  # rc: 0 approve · 1 revise · 2 infra failure
   local jl="$CL_STATE/${slug}.review.jsonl"
   base="$(cat "$CL_STATE/${slug}.base.sha" 2>/dev/null)"
   [ -n "${base:-}" ] || { _cl_log "gate[$slug]: no base sha (did impl run?)"; return 2; }
+  _cl_compat_check
+  _cl_has_flag --output-schema || { _cl_log "gate[$slug]: this codex has no 'exec --output-schema' — no machine-checkable verdict is possible. Use cl_review_human and judge it yourself."; return 2; }
   tmp="$(mktemp "$CL_STATE/${slug}.review.XXXXXX")" || return 2
   _cl_log "review[$slug]: autonomous codex gate (base $base)"
   codex exec $(_cl_model_flag "$CL_REVIEW_MODEL") -C "$CL_REPO" -s "$CL_REVIEW_SANDBOX" --json \
