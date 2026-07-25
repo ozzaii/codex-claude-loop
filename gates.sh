@@ -24,6 +24,11 @@ if command -v claude >/dev/null; then
   claude plugin validate ./plugin >/dev/null 2>&1 && echo "  ok   plugin manifest"      || { echo "  BAD  plugin manifest";      fail=1; }
 fi
 
+step "installer is pure ASCII"
+# a non-ASCII char glued to a variable ($REF...) got parsed into the variable NAME and
+# broke `curl | sh` in the wild. Keep install.sh to 7-bit.
+if LC_ALL=C grep -n '[^ -~	]' install.sh; then echo "  BAD  non-ASCII above"; fail=1; else echo "  ok   ascii only"; fi
+
 step "no leaked internals"
 if grep -rniE '/Users/|gho_[A-Za-z0-9]|sk-[A-Za-z0-9]{10}|AKIA[0-9A-Z]{16}' \
      --exclude-dir=.git --exclude=gates.sh . ; then

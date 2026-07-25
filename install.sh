@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/ozzaii/codex-claude-loop/main/install.sh | sh
 #
 # Installs the skill into ~/.claude/skills/codex-claude-loop. Needs curl and tar.
-# Claude Code users can install the plugin instead (see README) — this path is for
+# Claude Code users can install the plugin instead (see README) - this path is for
 # anyone driving the harness from a shell or from another agent harness.
 #
 #   --dir <path>   install somewhere else (e.g. ./.claude/skills for one project)
@@ -42,9 +42,9 @@ done
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-echo "downloading $REPO@$REF…"
-curl -fsSL "https://codeload.github.com/$REPO/tar.gz/$REF" | tar -xzf - -C "$tmp" \
-  || { echo "download failed — check the ref '$REF'" >&2; exit 1; }
+echo "downloading ${REPO}@${REF} ..."
+curl -fsSL "https://codeload.github.com/${REPO}/tar.gz/${REF}" | tar -xzf - -C "$tmp" \
+  || { echo "download failed - check the ref '${REF}'" >&2; exit 1; }
 
 src="$(find "$tmp" -type d -path "*/plugin/skills/$NAME" -maxdepth 5 | head -1)"
 [ -n "$src" ] || { echo "archive layout unexpected: no plugin/skills/$NAME inside" >&2; exit 1; }
@@ -58,12 +58,12 @@ fi
 cp -R "$src" "$TARGET"
 chmod +x "$TARGET/lib/$NAME.sh" 2>/dev/null || true
 
-echo "installed → $TARGET"
+echo "installed -> $TARGET"
 
 # Verify against the codex you actually have, rather than claiming success blindly.
 if command -v bash >/dev/null 2>&1; then
   echo
-  bash "$TARGET/lib/$NAME.sh" doctor || echo "(doctor reported problems above — the loop will refuse phases it cannot run)"
+  bash "$TARGET/lib/$NAME.sh" doctor || echo "(doctor reported problems above - the loop will refuse phases it cannot run)"
 fi
 
 cat <<EOF
