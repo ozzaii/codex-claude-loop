@@ -5,3 +5,6 @@
 *.base.sha
 .codex-claude-loop/
 node_modules/
+
+# internal scouting notes, not part of the plugin
+.scout/
