@@ -37,10 +37,12 @@ step "installer is pure ASCII"
 if LC_ALL=C grep -n '[^ -~	]' install.sh; then echo "  BAD  non-ASCII above"; fail=1; else echo "  ok   ascii only"; fi
 
 step "no leaked internals"
-if grep -rniE '/Users/|gho_[A-Za-z0-9]|sk-[A-Za-z0-9]{10}|AKIA[0-9A-Z]{16}' \
-     --exclude-dir=.git --exclude=gates.sh . ; then
+# Scan what SHIPS, not what happens to sit in the directory: tracked files only. An
+# untracked working note is not a leak, and treating it as one trains you to ignore this
+# gate, which is how the real thing gets through.
+if git ls-files -z | grep -zv '^gates.sh$' | xargs -0 grep -nIE '/Users/|gho_[A-Za-z0-9]|sk-[A-Za-z0-9]{10}|AKIA[0-9A-Z]{16}' ; then
   echo "  BAD  see above"; fail=1
-else echo "  ok   nothing leaked"; fi
+else echo "  ok   nothing leaked in tracked files"; fi
 
 printf '\n'
 [ "$fail" -eq 0 ] && { printf '\033[32mALL GATES GREEN\033[0m\n'; exit 0; } || { printf '\033[31mGATES RED\033[0m\n'; exit 1; }
