@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 — 2026-07-25
+
+**A filename git has to quote could hide its own content from the tree digest.** Same
+class as 0.3.1, found the same way, reproduced before it was believed.
+
+`_cl_tree_id` hashed untracked files by looping over the names `git ls-files --others`
+prints. Git quotes any name needing escapes, so `"evil\nname.txt"` reached
+`git hash-object` as a literal quoted string, hash-object could not find it, and that file
+then contributed a constant to the digest no matter what was written inside it. A tree
+tampered with after review kept a byte-identical id, and `cl_release` approved it.
+
+The fix removes the whole class instead of that one shape. A temporary index gets
+`read-tree HEAD` + `add -A` + `write-tree`, so **git** hashes every tracked and untracked
+file by content and returns one sha for all of it. Names bash cannot iterate safely never
+pass through the shell. The caller's real index is untouched, verified by an assertion.
+The unreferenced blobs this writes are collected by `git gc`, the same deal
+`git stash create` makes.
+
+Digests from earlier versions do not match the new ones, so any review approval recorded
+before this upgrade will be refused until you re-review. That is the intended direction.
+
+- 60 → 62 assertions, including the reproduction and an index-cleanliness check
+
 ## 0.3.1 — 2026-07-25
 
 **Gate 2 could be walked past with one git command.** A landscape scout found it and I

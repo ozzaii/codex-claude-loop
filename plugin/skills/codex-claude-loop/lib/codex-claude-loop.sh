@@ -218,7 +218,7 @@ _cl_plan_sha() { _cl_sha256_file "$CL_STATE/$1.plan.md"; }
 # `git diff HEAD` both describe an edited untracked file identically before and after the
 # edit, which would let a tree move underneath an approval unnoticed.
 _cl_tree_id() {
-  local head porc diff unt f lying
+  local head idx tree lying
   # The index can be told to lie. `git update-index --assume-unchanged <path>` (and
   # --skip-worktree) make status and diff ignore real edits to that path, so a file can be
   # rewritten after a review while this digest stays byte-identical. A workspace-write
@@ -233,16 +233,27 @@ _cl_tree_id() {
     return 1
   fi
   head="$(git -C "$CL_REPO" rev-parse HEAD 2>/dev/null)" || return 1
-  porc="$(git -C "$CL_REPO" status --porcelain=v1 -uall 2>/dev/null)"
-  diff="$(git -C "$CL_REPO" diff HEAD 2>/dev/null)"
-  unt=""
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    unt="$unt$f:$(git -C "$CL_REPO" hash-object -- "$f" 2>/dev/null)|"
-  done <<EOF
-$(git -C "$CL_REPO" ls-files --others --exclude-standard 2>/dev/null)
-EOF
-  printf '%s\n%s\n%s\n%s' "$head" "$porc" "$diff" "$unt" | _cl_sha256_stdin
+
+  # Let GIT hash the working tree. A hand-rolled loop over `ls-files --others` reads the
+  # names git prints, and git QUOTES any name needing escapes ("evil\nname.txt"), so the
+  # quoted string reaches hash-object, which cannot find it, and that file then contributes
+  # a constant to the digest no matter what is inside it. Reproduced: a tampered tree kept
+  # a byte-identical id. A temporary index sidesteps the whole class: `add -A` stages every
+  # tracked and untracked file by content, `write-tree` returns one sha for all of it, and
+  # names bash cannot iterate safely never pass through the shell. The real index is not
+  # touched. The blobs this writes are unreferenced and get collected by git gc, which is
+  # the same deal `git stash create` makes.
+  idx="$(mktemp "${TMPDIR:-/tmp}/ccl-index.XXXXXX")" || return 1
+  if ! GIT_INDEX_FILE="$idx" git -C "$CL_REPO" read-tree HEAD 2>/dev/null \
+    || ! GIT_INDEX_FILE="$idx" git -C "$CL_REPO" add -A 2>/dev/null \
+    || ! tree="$(GIT_INDEX_FILE="$idx" git -C "$CL_REPO" write-tree 2>/dev/null)"; then
+    rm -f "$idx"
+    _cl_log "tree: git could not hash the working tree, so this state cannot be identified"
+    return 1
+  fi
+  rm -f "$idx"
+  [ -n "$tree" ] || return 1
+  printf '%s\n%s' "$head" "$tree" | _cl_sha256_stdin
 }
 
 cl_verdict() { jq -r '.verdict' "$CL_STATE/$1.${2:-review}.verdict" 2>/dev/null; }

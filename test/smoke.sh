@@ -182,6 +182,21 @@ cl_release w1 >/dev/null 2>&1; check "release refuses while the index is lying" 
 git -C "$CL_REPO" update-index --no-assume-unchanged IMPLEMENTED.txt 2>/dev/null
 git -C "$CL_REPO" checkout -- IMPLEMENTED.txt 2>/dev/null
 
+# git quotes a filename that needs escaping ("evil\nname.txt"). A shell loop over those
+# names hands the quoted string to hash-object, which cannot find it, so the file used to
+# contribute a constant to the digest whatever was inside it.
+evil="$(printf 'evil\nname.txt')"
+printf 'v1' > "$CL_REPO/$evil"
+e1="$(_cl_tree_id)"
+printf 'v2-tampered' > "$CL_REPO/$evil"
+e2="$(_cl_tree_id)"
+[ -n "$e1" ] && [ "$e1" != "$e2" ] && ok "a filename git has to quote cannot hide its content" \
+                                   || bad "a filename git has to quote cannot hide its content"
+rm -f "$CL_REPO/$evil"
+# the digest must not stage anything in the caller's real index
+git -C "$CL_REPO" diff --cached --quiet 2>/dev/null && ok "hashing the tree leaves the real index alone" \
+                                                    || bad "hashing the tree leaves the real index alone"
+
 # --------------------------------------------------------------- revise -------
 cl_revise w1 "the retry must be idempotent, not just present" >/dev/null 2>&1
 check "revise clears the review verdict" "$(cl_verdict w1 review)" ""
