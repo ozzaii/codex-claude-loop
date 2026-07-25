@@ -1,5 +1,7 @@
 # codex-claude-loop
 
+![Codex implements the plan it wrote itself](media/linkedin.png)
+
 A gated build loop between Claude Code and Codex CLI. Codex writes the plan, Claude
 approves it, Codex implements **that same plan from the same thread**, Claude reviews the
 diff against it.
@@ -7,7 +9,14 @@ diff against it.
 ```
 brief → codex plans → CLAUDE APPROVES → codex implements → CLAUDE REVIEWS → release
                           ▲ gate 1                              ▲ gate 2
+                          cl_impl                               cl_release
+                          refuses without it                    refuses without it
 ```
+
+Both gates have a consumer, which is what makes them gates rather than notes: `cl_impl`
+refuses to run unless the plan is approved *and* the plan file still hashes to what was
+approved; `cl_release` refuses unless the review is approved *and* the tree still hashes
+to what was reviewed.
 
 Bash around `codex exec`. No MCP server, no daemon, no Python.
 
@@ -51,8 +60,13 @@ cl_impl  auth-rl                           # same thread implements it, holds th
 cl_review_human auth-rl                    # adversarial review of the diff vs the plan
 cl_revise auth-rl "1) bucket resets on deploy, persist it  2) …"
 cl_record_verdict auth-rl review approve "blockers cleared, tests green"
+cl_release auth-rl                         # refuses unless both gates hold right now
 cl_status
 ```
+
+`cl_wave <slug> <brief.md>` drives the same sequence one step at a time. It returns 3
+when it is your turn (read the plan, review the diff) and 0 once both gates hold, so you
+re-run it after each judgment instead of watching it block.
 
 Unattended, with nobody to judge: `cl_codex_gate <slug>` runs a Codex reviewer bound to
 [`verdict.schema.json`](plugin/skills/codex-claude-loop/schemas/verdict.schema.json). It
@@ -68,18 +82,20 @@ something else, but nice" is a blocking finding rather than a shrug.
 
 ## Two lanes, pipelined
 
-The code's contribution here is the lock, not a scheduler: implementation is the only
-serialized step, so the read-only phases can safely overlap it. Overlapping them is
-something the orchestrator does, and the skill instructs Claude to do it.
+Implementation is the only serialized step, so planning the next brief is free to run
+during it. Reviewing is not: a reviewer reading a tree that a writer is editing judges
+half-written files, so `cl_review_human` and `cl_codex_gate` refuse while the writer lock
+is held.
 
 ```
 impl(N)        [======= writes tree, lock held =======]
-review(N-1)    [== read-only ==]
-plan(N+1)              [== read-only ==]  approve ✓ → impl(N+1) starts immediately
+plan(N+1)      [== read-only, overlaps freely ==]  approve ✓ → impl(N+1) next
+review(N-1)                                        [== after the lock clears ==]
 ```
 
-Codex never idles, and Claude keeps its own lane for the work that is the reason to use
-Claude.
+Genuine review/implement overlap needs the lanes in **separate worktrees**, one
+`CL_REPO` each. That is what `CL_WRITABLE_ROOTS` exists for. Set
+`CL_ALLOW_CONCURRENT_REVIEW=1` only if you accept reviewing a moving tree.
 
 ## What it refuses to do
 
@@ -87,33 +103,43 @@ A gate that always approves is worse than no gate.
 
 - `cl_impl` refuses unless the plan verdict is `approve`
 - an approval is bound to the plan text that was read: edit `plan.md` afterwards and the
-  approval stops counting, because the verdict carries the plan's hash
+  approval stops counting, because the verdict carries the plan's hash. A plan that
+  cannot be hashed at all (deleted file, no sha256 tool) also voids it, rather than
+  reading as "no mismatch found"
+- `cl_record_verdict` refuses to record an approval it could never verify later
 - `cl_impl` refuses without a stored thread id, and never falls back to `resume --last`
-- `cl_review_human` refuses when implementation never ran, rather than reviewing an
-  empty diff and inviting an approval
-- a fresh `cl_plan` deletes both verdicts, `cl_revise` deletes the review verdict
-- a failed autonomous gate returns rc 2 and leaves no stale verdict behind
-- `approve` plus a non-empty `blocking[]` becomes `revise`, rewritten in the file
-- a second `cl_impl` waits on the lock; a lock orphaned by Ctrl-C is reclaimed by pid
+- review refuses when no implementation succeeded, and while a writer holds the lock
+- `cl_release` refuses unless the review approved *this* tree: it compares the base sha
+  and a hash of HEAD plus every uncommitted and untracked byte
+- a fresh `cl_plan` clears both verdicts, the recorded base, and the success marker;
+  `cl_impl` and `cl_revise` clear the review approval before they touch the tree
+- a failed autonomous gate leaves the slug **unapproved**: the standing verdict is
+  cleared before the attempt, so a crash can never leave yesterday's approval in place
+- `approve` plus a non-empty `blocking[]` becomes `revise`, rewritten in the file. A
+  `blocking` that is not an array is refused outright rather than counted as zero
+- a second `cl_impl` waits on the lock. A stale lock is reclaimed by renaming it, so two
+  waiters cannot both reclaim, and only the owning pid may release
 
 ## Surviving a Codex update
 
 The CLI moves, and a moved flag used to mean a lane that died silently into its log.
 
-- `cl_doctor` probes the four things the loop depends on (`exec`, `--json`, `-o`,
-  `exec resume`) and accepts alternate spellings, so a rename is not read as a loss
-- the thread id is parsed in three tiers: the known event shape, then drifted keys and
-  event names, then any id-carrying line. Tiers 2 and 3 announce themselves in the log
+- `cl_doctor` probes the four capabilities the loop depends on (`exec --json`, `exec -o`,
+  `exec --output-schema`, `exec resume`) by the exact spelling the driver invokes
+- the thread id is read from a documented thread-start event, including renamed events
+  and keys; a drifted shape is announced in the log, and an id that does not look like an
+  id is refused rather than resumed
 - a codex family outside the tested set prints one warning, then continues
-- `cl_impl` refuses when `exec resume` is gone, `cl_codex_gate` refuses when
-  `--output-schema` is gone, and both say what to do instead
+- every phase declares the capabilities it needs, so a missing verb or flag produces a
+  refusal that names the capability instead of a lane that dies in its log
 
 ## Config
 
 | Env | Default | Notes |
 |---|---|---|
 | `CL_REPO` | git root of `$PWD` | the tree Codex writes |
-| `CL_STATE` | `~/.codex-claude-loop/<repo>` | plans, verdicts, thread ids, logs, kept outside the repo |
+| `CL_STATE` | `~/.codex-claude-loop/<repo>-<hash of its path>` | plans, verdicts, thread ids, logs, kept outside the repo. The path hash keeps `~/a/app` and `~/b/app` apart |
+| `CL_ALLOW_CONCURRENT_REVIEW` | | `1` lets a review run while a writer holds the lock |
 | `CL_SANDBOX` | `workspace-write` | implementation sandbox |
 | `CL_PLAN_SANDBOX`, `CL_REVIEW_SANDBOX` | `read-only` | raise only on hosts where sandboxing itself fails |
 | `CL_IMPL_MODEL`, `CL_PLAN_MODEL`, `CL_REVIEW_MODEL` | codex default | plan cheap, review strong |
@@ -140,6 +166,11 @@ Each of these cost hours before it became a line of code.
   second.
 - An implementation of only new files looks like an empty diff, so the gate prompt forces
   `git status --short` too.
+- `git status` and `git diff HEAD` describe an edited *untracked* file identically before
+  and after the edit. Hashing a tree therefore has to hash untracked content too
+  (`git hash-object`), or a file can move underneath an approval unnoticed.
+- A memo helper written as `help="$(_load)"` caches into a subshell that then exits, so
+  it never memoizes. The assignment has to happen in the calling shell.
 
 Run `cl_selfreview` on day one: Codex tearing this harness apart before you trust it.
 
@@ -147,14 +178,21 @@ Run `cl_selfreview` on day one: Codex tearing this harness apart before you trus
 
 ```bash
 ./gates.sh             # smoke (bash + zsh) + shellcheck + manifest validation
-bash test/smoke.sh     # 33 assertions, no Codex quota spent
+bash test/smoke.sh     # 53 assertions, no Codex quota spent
 ```
 
-The suite drives the whole loop against a stub `codex` and asserts that the gates gate:
-implementation refuses an unapproved plan, an `approve` with blockers is downgraded on
-disk, a re-plan clears both verdicts, a dead lock holder is reclaimed while a live one
-blocks, a drifted thread event still parses, and a removed flag produces a refusal rather
-than a silent death.
+The suite drives the whole loop against a stub `codex` that enforces the invocation
+contract: it rejects a global flag placed after `resume`, demands `-C` and `-s`, and can
+be told which thread id it must be resumed with. So "impl ran" also proves the flags were
+placed correctly and the stored thread was the one resumed.
+
+It then asserts that the gates gate: implementation refuses an unapproved plan, an
+approval dies when its plan file moves or cannot be hashed, a failed autonomous gate
+leaves no standing approval, `approve` with blockers is downgraded on disk, a `blocking`
+that is not an array is refused, release refuses once the tree changes underneath it, a
+review refuses while a writer holds the lock, a dead lock holder is reclaimed while a
+live one blocks and only the owner may release, a slug cannot escape the state directory,
+and a removed flag or verb produces a refusal rather than a silent death.
 
 ## Prior art
 

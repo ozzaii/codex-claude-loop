@@ -7,13 +7,18 @@ fail=0
 step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 verdict() { if [ "$1" -eq 0 ]; then printf '\033[32mok\033[0m\n'; else printf '\033[31mFAILED\033[0m\n'; fail=1; fi; }
 
+# A missing tool is a RED gate, not a quiet pass: "all gates green" has to mean the gates
+# ran. Install zsh and shellcheck, or accept that this machine cannot clear the bar.
 step "smoke — bash";  bash test/smoke.sh < /dev/null; verdict $?
-step "smoke — zsh";   if command -v zsh >/dev/null; then zsh test/smoke.sh < /dev/null; verdict $?; else echo "(zsh not installed — skipped)"; fi
+step "smoke — zsh"
+if command -v zsh >/dev/null; then zsh test/smoke.sh < /dev/null; verdict $?
+else echo "  MISS zsh not installed — the harness is sourced from zsh, so this gate cannot be skipped"; fail=1; fi
 
 step "shellcheck"
 if command -v shellcheck >/dev/null; then
   shellcheck -S error plugin/skills/codex-claude-loop/lib/codex-claude-loop.sh test/smoke.sh gates.sh; verdict $?
-else echo "(shellcheck not installed — skipped)"; fi
+  shellcheck -S error -s sh install.sh; verdict $?
+else echo "  MISS shellcheck not installed"; fail=1; fi
 
 step "manifests"
 if command -v jq >/dev/null; then
