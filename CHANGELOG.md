@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.0 — 2026-07-25
+
+Four items from the landscape scan, each the smaller version its own skeptic argued for.
+
+**A dead holder pid no longer proves the writer is gone.** Kill the shell and its
+`codex exec` child keeps writing the tree, so reclaiming the lock on the pid alone let a
+second writer in beside a live orphan — the one thing the lock exists to prevent. The lock
+now records the phase log its holder is about to write, and a dead holder is reclaimed only
+once that log has gone quiet (`CL_LOCK_QUIET_MIN`, default 5). While it is still growing,
+the loop waits and then refuses. A lock that recorded no log falls back to pid-only reclaim
+and says UNVERIFIED, so an interrupted lock cannot jam forever.
+
+**Findings are data, not instructions.** A blocking item reaches `cl_revise` from a
+reviewer that read arbitrary repo content, and it is replayed verbatim into every later
+judge. An item starting a line with `=====`, the fence this harness uses to delimit its own
+sections, could close the block early and write instructions into a `workspace-write`
+thread. Refused at the door. A fence inside a sentence stays legal.
+
+**`cl_status` answers a script.** It exits 3 when an implementation stands with no review
+approval covering the current tree, and 0 when nothing is waiting on you. Silence there is
+how a finished wave sits unreleased for a day.
+
+**`cl_doctor` stops overstating itself.** Auth is a three-state probe via `codex login
+status`: logged in, not logged in (fails), or UNKNOWN on a codex without the subcommand
+(does not fail). And it now ends with a line saying no turn was taken, so a green doctor
+cannot be read as proof that quota, rate limits and model availability are fine.
+
+- 62 → 72 assertions, plus two stub knobs for the auth states
+
 ## 0.4.0 — 2026-07-25
 
 **A filename git has to quote could hide its own content from the tree digest.** Same

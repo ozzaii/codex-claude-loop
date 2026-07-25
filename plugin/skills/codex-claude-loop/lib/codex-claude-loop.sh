@@ -372,11 +372,29 @@ cl_doctor() {
   _cl_doctor_cap schema 'exec --output-schema' || ok=1
   _cl_doctor_cap resume 'exec resume'          || ok=1
   _cl_check_writable_roots || ok=1
+  # Three states, not two. `codex login status` answers without spending a turn; when the
+  # subcommand itself is missing we say UNKNOWN rather than inventing either answer.
+  local auth
+  if auth="$(codex login status 2>&1)"; then
+    case "$auth" in
+      *[Ll]ogged\ in*) printf '  ok   auth    %s\n' "$auth" ;;
+      *) printf '  warn auth    codex answered but not with a login state: %s\n' "$auth" ;;
+    esac
+  else
+    case "$auth" in
+      *"unrecognized subcommand"*|*"unexpected argument"*) printf '  warn auth    this codex has no `login status`, so auth is UNKNOWN here\n' ;;
+      *) printf '  MISS auth    not logged in: %s\n' "$auth"; ok=1 ;;
+    esac
+  fi
   printf '  repo:   %s\n' "$CL_REPO"
   printf '  state:  %s\n' "$CL_STATE"
   printf '  schema: %s\n' "$CL_VERDICT_SCHEMA"
   [ -f "$CL_VERDICT_SCHEMA" ] || { printf '  MISS verdict schema is not at that path\n'; ok=1; }
   git -C "$CL_REPO" rev-parse HEAD >/dev/null 2>&1 || { printf '  MISS repo is not a git worktree\n'; ok=1; }
+  # Everything above is --help parsing, a version string and a login check. None of it
+  # asked codex to take a turn, so none of it proves a turn would succeed. Say so, rather
+  # than letting a green doctor stand in for a working model.
+  printf '  note: no turn was taken — quota, rate limits and model availability are untested\n'
   return $ok
 }
 
@@ -474,7 +492,7 @@ cl_impl() {
   plantext="$(cat "$CL_STATE/${slug}.plan.md")" || return 2
   # the implementation starts over: any earlier review approval and success marker are void
   rm -f "$CL_STATE/${slug}.review.verdict" "$CL_STATE/${slug}.impl.ok"
-  _cl_lock_acquire || return 2    # one writer only (mkdir lock; macOS has no flock)
+  _cl_lock_acquire "$CL_STATE/${slug}.impl.jsonl" || return 2   # one writer only (mkdir lock; macOS has no flock)
   _cl_log "impl[$slug]: implementing approved plan (writer lock held)"
   local dirty; dirty="$(git -C "$CL_REPO" status --porcelain=v1 -uall 2>/dev/null | wc -l | tr -d ' ')"
   [ "${dirty:-0}" != "0" ] && _cl_log "impl[$slug]: WARNING $dirty pre-existing dirty/untracked paths — the review will see them too"
@@ -505,12 +523,21 @@ cl_revise() {
   local slug="${1:-}" notes="${2:-}" rc
   _cl_slug_ok "$slug" || return 2
   [ -n "$notes" ] || { _cl_log "usage: cl_revise <slug> \"<blocking items>\""; return 2; }
+  # Findings are DATA. They are written by a reviewer that read arbitrary repo content, and
+  # they get replayed verbatim into every later judge. A line starting with the fence this
+  # harness uses to delimit its own sections could close the BLOCKING block early and write
+  # instructions of its own into a workspace-write thread, so it is refused at the door.
+  case "$notes" in
+    "====="*|*"$(printf '\n=====')"*)
+      _cl_log "revise[$slug] REFUSED: a blocking item starts a line with '=====', the fence this harness uses to delimit sections in the prompt it sends. Findings are data, not instructions. Rewrite the item without a leading fence."
+      return 2 ;;
+  esac
   _cl_compat_check
   _cl_require "revise[$slug]" resume json out || return 2
   _cl_session "$slug" >/dev/null || return 2
   # the tree is about to move: the review approval and the success marker are void
   rm -f "$CL_STATE/${slug}.review.verdict" "$CL_STATE/${slug}.impl.ok"
-  _cl_lock_acquire || return 2
+  _cl_lock_acquire "$CL_STATE/${slug}.revise.jsonl" || return 2
   _cl_log "revise[$slug]: sending blocking items back to the implementer thread"
   _cl_codex_resume "$slug" revise \
     "Review of your implementation found BLOCKING items. Fix every one of them, re-run \
@@ -627,15 +654,34 @@ cl_release() {
 # must never clobber the calling shell's EXIT/INT traps. When sourced, every return path
 # releases the lock explicitly.
 CL_DISPATCHED="${CL_DISPATCHED:-0}"
-_cl_lock_acquire() {
-  local waited=0 holder stale
+_cl_lock_acquire() {   # [phase-log-path]
+  local waited=0 holder stale logf quiet
+  local mylog="${1:-}"
   case "$CL_LOCK" in "$CL_STATE"/*) ;; *) _cl_log "refusing to use a lock outside the state dir: $CL_LOCK"; return 1 ;; esac
   while ! mkdir "$CL_LOCK" 2>/dev/null; do
     holder=''; read -r holder 2>/dev/null < "$CL_LOCK/pid"
     if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+      # A dead pid means the BOOKKEEPER is gone. It does not mean the writer is: kill the
+      # shell and its `codex exec` child keeps writing the tree. Reclaiming on the pid
+      # alone lets a second writer in beside a live orphan, which is the one thing this
+      # lock exists to prevent. So ask the phase log the dead holder was writing whether
+      # anything is still coming out of it.
+      logf=''; read -r logf 2>/dev/null < "$CL_LOCK/log"
+      if [ -n "$logf" ] && [ -f "$logf" ]; then
+        # capture, then match: `find | grep -q` under pipefail is the SIGPIPE trap
+        quiet="$(find "$logf" -mmin +"${CL_LOCK_QUIET_MIN:-5}" 2>/dev/null)"
+        if [ -z "$quiet" ]; then
+          [ "$waited" -eq 0 ] && _cl_log "lock: holder pid=$holder is gone, but $logf is still being written — waiting rather than joining it"
+          sleep 5; waited=$((waited+5))
+          if [ "$waited" -ge "${CL_LOCK_TIMEOUT:-7200}" ]; then _cl_log "lock: gave up after ${CL_LOCK_TIMEOUT:-7200}s (orphaned writer still active on $logf)"; return 1; fi
+          continue
+        fi
+      fi
       stale="$CL_LOCK.stale.$$.$waited"
       if mv "$CL_LOCK" "$stale" 2>/dev/null; then
-        _cl_log "lock: stale holder pid=$holder — reclaimed"; rm -rf "$stale"
+        if [ -n "$logf" ]; then _cl_log "lock: stale holder pid=$holder — reclaimed, its log went quiet"
+        else _cl_log "lock: stale holder pid=$holder — reclaimed UNVERIFIED (it recorded no phase log)"; fi
+        rm -rf "$stale"
       fi
       continue                       # loser of the race just retries mkdir
     fi
@@ -645,6 +691,8 @@ _cl_lock_acquire() {
     if [ "$waited" -ge "${CL_LOCK_TIMEOUT:-7200}" ]; then _cl_log "lock: gave up after ${CL_LOCK_TIMEOUT:-7200}s (pid=${holder:-?})"; return 1; fi
   done
   echo $$ > "$CL_LOCK/pid"
+  # dies with the lock, so it can never go stale on its own
+  [ -n "$mylog" ] && printf '%s\n' "$mylog" > "$CL_LOCK/log"
   if [ "$CL_DISPATCHED" = 1 ]; then
     trap '_cl_lock_release' EXIT
     trap '_cl_lock_release; exit 130' INT
@@ -663,14 +711,17 @@ _cl_lock_release() {
 }
 
 # --------------------------------------------------------------------- status ----
-cl_status() {   # [slug]
-  local sessions f slug base
+cl_status() {   # [slug]   rc 0 = nothing waiting on you, rc 3 = something is
+  local sessions f slug base pending=0
   # `find`, not a glob: an unmatched glob is a hard error under zsh, which would abort
   # before the "nothing here yet" branch could run
   sessions="$(find "$CL_STATE" -maxdepth 1 -name '*.session' 2>/dev/null | sort)"
   printf '%-24s %-8s %-8s %-9s %s\n' SLUG PLAN REVIEW IMPL BASE
   [ -n "$sessions" ] || { echo "(no slugs yet in $CL_STATE)"; return 0; }
-  printf '%s\n' "$sessions" | while read -r f; do
+  # a here-doc, not a pipe: a `| while` runs in a subshell and the pending flag set inside
+  # it would never reach the caller, which is the whole point of the exit code
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
     slug="${f##*/}"; slug="${slug%.session}"
     [ -n "${1:-}" ] && [ "$1" != "$slug" ] && continue
     base="$(_cl_base "$slug" || echo '-')"
@@ -679,7 +730,16 @@ cl_status() {   # [slug]
       "$(cl_review_approved "$slug" 2>/dev/null && echo approve || cl_verdict "$slug" review || echo -)" \
       "$([ -f "$CL_STATE/${slug}.impl.ok" ] && echo ok || echo -)" \
       "$(printf '%s' "$base" | cut -c1-8)"
-  done
+    # An implementation standing with no review approval covering THIS tree is work waiting
+    # on a human. Silence there is how a finished wave sits unreleased for a day.
+    if [ -f "$CL_STATE/${slug}.impl.ok" ] && ! cl_review_approved "$slug" 2>/dev/null; then
+      pending=1
+    fi
+  done <<EOF
+$sessions
+EOF
+  [ "$pending" = 1 ] && return 3
+  return 0
 }
 
 # ------------------------------------------------------- driver: one wave ------

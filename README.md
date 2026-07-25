@@ -45,7 +45,10 @@ then `codex login`), plus `jq` and `git`.
 
 In Claude Code: `/codex-claude-loop:wave <slug> <brief.md>` walks the whole cycle and
 stops at both gates for your judgment. `/codex-claude-loop:status` shows where every slug
-stands. `/codex-claude-loop:doctor` checks the substrate.
+stands. `/codex-claude-loop:doctor` checks the substrate, and says plainly that it never took a
+turn, so a green doctor is not read as proof that quota and model availability are fine.
+`cl_status` exits 3 when an implementation is standing with no review approval covering the
+current tree, so a script can tell that work is waiting on a human.
 
 From a shell:
 
@@ -124,6 +127,12 @@ A gate that always approves is worse than no gate.
   `blocking` that is not an array is refused outright rather than counted as zero
 - a second `cl_impl` waits on the lock. A stale lock is reclaimed by renaming it, so two
   waiters cannot both reclaim, and only the owning pid may release
+- a lock whose holder pid is dead is reclaimed only once the phase log that holder was
+  writing has gone quiet. A dead bookkeeper does not mean a dead writer: kill the shell and
+  its `codex exec` child keeps writing
+- `cl_revise` refuses a blocking item that starts a line with `=====`, the fence the
+  harness uses to delimit its own sections. Findings are data, and data that can forge a
+  boundary can write instructions
 
 ## Surviving a Codex update
 
@@ -151,6 +160,7 @@ The CLI moves, and a moved flag used to mean a lane that died silently into its 
 | `CL_WRITABLE_ROOTS` | | needed when `CL_REPO` is a linked worktree |
 | `CL_NET` | | `1` grants the sandbox network for test gates |
 | `CL_LOCK_TIMEOUT` | `7200` | seconds to wait for the writer lock |
+| `CL_LOCK_QUIET_MIN` | `5` | minutes a dead holder's phase log must be idle before its lock is reclaimed |
 
 ## Field notes
 
