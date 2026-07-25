@@ -1,6 +1,6 @@
 # codex-claude-loop
 
-![Codex implements the plan it wrote itself](media/linkedin.png)
+![Your AI approves its own work. This one can't.](media/linkedin.png)
 
 A gated build loop between Claude Code and Codex CLI. Codex writes the plan, Claude
 approves it, Codex implements **that same plan from the same thread**, Claude reviews the
@@ -111,6 +111,9 @@ A gate that always approves is worse than no gate.
 - review refuses when no implementation succeeded, and while a writer holds the lock
 - `cl_release` refuses unless the review approved *this* tree: it compares the base sha
   and a hash of HEAD plus every uncommitted and untracked byte
+- `cl_revise` keeps every round's blocking items, and each later review is handed them
+  with instructions to judge intent rather than wording: a fix that satisfies the sentence
+  and misses the point is still blocking
 - a fresh `cl_plan` clears both verdicts, the recorded base, and the success marker;
   `cl_impl` and `cl_revise` clear the review approval before they touch the tree
 - a failed autonomous gate leaves the slug **unapproved**: the standing verdict is

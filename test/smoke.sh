@@ -169,14 +169,36 @@ cl_release w1 >/dev/null 2>&1; check "release refuses after the tree moved post-
 git -C "$CL_REPO" checkout -- . 2>/dev/null; echo "implemented" > "$CL_REPO/IMPLEMENTED.txt"
 
 # --------------------------------------------------------------- revise -------
-cl_revise w1 "fix the thing" >/dev/null 2>&1
+cl_revise w1 "the retry must be idempotent, not just present" >/dev/null 2>&1
 check "revise clears the review verdict" "$(cl_verdict w1 review)" ""
+
+# ------------------------------------------------------------ intent drift ----
+# A fix can satisfy the wording of a blocking item and miss its point. The next review
+# only catches that if it can still see what was asked for.
+case "$(cat "$CL_STATE/w1.carryover.md" 2>/dev/null)" in
+  *"must be idempotent"*) ok  "revise records the items it sent back" ;;
+  *)                      bad "revise records the items it sent back" ;;
+esac
+case "$(_cl_review_prompt w1 HEAD)" in
+  *"must be idempotent"*) ok  "the next review sees earlier rounds' items" ;;
+  *)                      bad "the next review sees earlier rounds' items" ;;
+esac
+case "$(_cl_review_prompt w1 HEAD)" in
+  *"INTENT, not wording"*) ok  "the review is told to judge intent, not wording" ;;
+  *)                       bad "the review is told to judge intent, not wording" ;;
+esac
+cl_revise w1 "second round item" >/dev/null 2>&1
+case "$(cat "$CL_STATE/w1.carryover.md" 2>/dev/null)" in
+  *"## round 2"*) ok  "rounds accumulate instead of overwriting" ;;
+  *)              bad "rounds accumulate instead of overwriting" ;;
+esac
 
 # --------------------------------------------------------- re-plan invalidates --
 cl_plan w1 "$TMP/brief.md" >/dev/null 2>&1
 check "re-plan clears the plan verdict" "$(cl_verdict w1 plan)" ""
 [ -f "$CL_STATE/w1.base.sha" ] && bad "re-plan clears the recorded base" || ok "re-plan clears the recorded base"
 [ -f "$CL_STATE/w1.impl.ok" ]  && bad "re-plan clears the success marker" || ok "re-plan clears the success marker"
+[ -f "$CL_STATE/w1.carryover.md" ] && bad "re-plan clears the carryover" || ok "re-plan clears the carryover"
 
 case "$(cl_status)" in *"w1 "*) ok "status lists the slug" ;; *) bad "status lists the slug" ;; esac
 

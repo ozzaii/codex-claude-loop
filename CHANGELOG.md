@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0 — 2026-07-25
+
+**Intent drift.** A reader of the launch thread described the failure this loop did not
+catch: Codex satisfies the wording of a blocking item, misses what the item was asking
+for, and nobody notices until a later round. He asked whether the hash binding prevented
+it. It did not. Hashing binds an approval to the state it judged; it says nothing about
+whether a fix meant what the reviewer meant.
+
+The gap was structural. `cl_revise` handed the blocking items to the Codex thread and kept
+no copy, so the next review started from the diff alone and had no way to ask "did this
+resolve what was asked?".
+
+- `cl_revise` now appends each round's items to `<slug>.carryover.md`
+- both review paths carry every earlier round into the prompt and are told to judge each
+  item on intent: a change that satisfies the sentence and misses the point stays blocking,
+  and the reviewer has to name the item, quote the line that satisfies the letter, and
+  state the intent it misses
+- reviewers also mark which items are settled, so later rounds stop re-litigating them
+- `cl_plan` clears the carryover, since those items were raised against a plan that is gone
+- 53 → 58 assertions
+
 ## 0.2.0 — 2026-07-25
 
 Hardening pass after an adversarial review by Codex (`gpt-5.6-sol`, xhigh) of the 0.1.0

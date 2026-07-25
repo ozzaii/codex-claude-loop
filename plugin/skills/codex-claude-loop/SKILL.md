@@ -67,6 +67,10 @@ loop moving unattended — but a real orchestrator review is the standard.
 - **Gates must refute, not rubber-stamp.** A gate that always approves is worse than no
   gate. Blocking items need concrete fixes, and `approve` with a non-empty blocking list
   is downgraded on disk.
+- **A revise round is not closed by a matching sentence.** Every item you send back with
+  `cl_revise` is kept and handed to the next review, which is told to judge it on intent.
+  When you review, do the same: ask what the item was trying to prevent, then check the
+  code prevents it. A change that satisfies the wording and misses the point stays blocking.
 - **Approvals are bound to what they judged.** Editing the plan voids its approval;
   changing the tree voids the review approval. If a re-approval is refused, read the
   reason rather than deleting state to make it pass.

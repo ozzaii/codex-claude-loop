@@ -286,6 +286,12 @@ _cl_codex_resume() {  # <slug> <label> <prompt>   — caller holds the writer lo
 
 # The review instruction both gates share. They differ only in their tail, so they cannot
 # drift apart: whatever the autonomous gate is told to inspect, the human gate is too.
+#
+# The carryover block is what catches INTENT DRIFT. Hashing binds an approval to the state
+# it judged; it says nothing about whether a fix meant what the reviewer meant. Without the
+# items from earlier rounds in front of it, each review starts from the diff alone, so a
+# change that satisfies the wording of a blocking item and misses its point reads as done
+# and surfaces a round later, or never.
 _cl_review_prompt() {  # <slug> <base>
   cat <<EOF
 Adversarially review ALL changes since $2 STRICTLY against the approved plan at
@@ -294,6 +300,18 @@ git diff $2 (covers committed + working tree), git status --short (untracked fil
 too — a new-files-only implementation is NOT an empty change). Read any file you need.
 Flag: correctness/safety holes, plan deviations, fake-success/silent-degrade, secret
 leaks, cross-tenant reads.
+EOF
+  [ -s "$CL_STATE/$1.carryover.md" ] || return 0
+  cat <<EOF
+
+===== ITEMS SENT BACK IN EARLIER ROUNDS =====
+$(cat "$CL_STATE/$1.carryover.md")
+===== END OF EARLIER ITEMS =====
+Judge every item above on INTENT, not wording. Ask what the item was trying to prevent,
+then check whether the current code prevents it. A change that satisfies the sentence and
+misses the point is still blocking: name the item, quote the line that satisfies the
+letter, and state the intent it misses. Say in one line which items are genuinely settled,
+so the next round does not re-litigate them.
 EOF
 }
 
@@ -373,9 +391,10 @@ EOF
   printf '%s\n' "$sid" > "$CL_STATE/${slug}.session"
   # a fresh plan invalidates everything downstream of it: both verdicts, the recorded
   # base, and the marker saying an implementation of the OLD plan succeeded
+  # carryover goes too: those items were raised against a plan that no longer exists
   rm -f "$CL_STATE/${slug}.plan.verdict" "$CL_STATE/${slug}.review.verdict" \
-        "$CL_STATE/${slug}.base.sha" "$CL_STATE/${slug}.impl.ok"
-  _cl_log "plan[$slug]: plan -> $out ; thread $sid (verdicts, base and impl marker cleared)"
+        "$CL_STATE/${slug}.base.sha" "$CL_STATE/${slug}.impl.ok" "$CL_STATE/${slug}.carryover.md"
+  _cl_log "plan[$slug]: plan -> $out ; thread $sid (verdicts, base, impl marker and carryover cleared)"
   printf '%s\n' "$out"
 }
 
@@ -480,7 +499,13 @@ $notes"
   _cl_lock_release
   if [ $rc -eq 0 ]; then
     _cl_base "$slug" > "$CL_STATE/${slug}.impl.ok" 2>/dev/null
-    _cl_log "revise[$slug]: done — re-review required"
+    # Keep the items. The next review has to judge them on intent, not on wording, and it
+    # cannot do that from the diff alone.
+    local co="$CL_STATE/${slug}.carryover.md" n round
+    n="$(grep -c '^## round ' "$co" 2>/dev/null)"; case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    round=$((n+1))
+    printf '## round %s (%s)\n%s\n\n' "$round" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$notes" >> "$co"
+    _cl_log "revise[$slug]: done — round $round recorded, re-review required"
   else
     _cl_log "revise[$slug] FAILED"
   fi
