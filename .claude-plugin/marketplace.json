@@ -11,7 +11,7 @@
   "plugins": [
     {
       "name": "codex-claude-loop",
-      "description": "Delegate serious multi-file work to Codex CLI under two hard gates: Claude approves the plan Codex authored, Codex implements that same plan from the SAME persistent thread, Claude reviews the diff against it. Pipelined two-lane driver, mkdir writer lock, schema-checked verdicts.",
+      "description": "Delegate serious multi-file work to Codex CLI under two hard gates: Claude approves the plan Codex authored, Codex implements that same plan from the SAME persistent thread, Claude reviews the diff against it. Writer lock so only implementation is serialized, schema-checked verdicts, survives codex-cli updates.",
       "version": "0.1.0",
       "author": {
         "name": "Kaan Ozkan",

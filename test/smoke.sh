@@ -83,7 +83,7 @@ echo "do the thing" > "$TMP/brief.md"
 # shellcheck source=/dev/null
 . "$LIB"
 
-echo "== codex-claude-loop smoke ($(basename "${BASH_VERSION:+bash}${ZSH_VERSION:+zsh}"))"
+echo "== codex-claude-loop smoke (${BASH_VERSION:+bash}${ZSH_VERSION:+zsh})"
 
 doc="$(cl_doctor 2>&1)"; check "doctor passes" "$?" "0"
 [ -n "${SMOKE_VERBOSE:-}" ] && printf '%s\n' "$doc"
@@ -141,9 +141,16 @@ cl_record_verdict drift plan approve "x"
 STUB_NO_RESUME=1 cl_impl drift >/dev/null 2>&1
 check "impl refuses when 'exec resume' is gone" "$?" "2"
 
+cl_revise drift "fix it" >/dev/null 2>&1                      # sanity: works when resume exists
+STUB_NO_RESUME=1 cl_revise drift "fix it" >/dev/null 2>&1
+check "revise refuses when 'exec resume' is gone" "$?" "2"
+
 cp "$CL_STATE/w1.base.sha" "$CL_STATE/drift.base.sha" 2>/dev/null
-STUB_NO_SCHEMA=1 cl_codex_gate drift >/dev/null 2>&1
+# the help text is memoized per process, exactly as a real upgrade would need a new
+# process or a cl_doctor; bust it so the stub's new answer is visible
+unset _CL_HELP; STUB_NO_SCHEMA=1 cl_codex_gate drift >/dev/null 2>&1
 check "autonomous gate refuses when --output-schema is gone" "$?" "2"
+unset _CL_HELP
 
 # capture, then match: piping into `grep -q` closes the pipe early and pipefail turns the
 # SIGPIPE'd producer into a failed pipeline (the same trap the harness itself had)
@@ -153,6 +160,23 @@ case "$(STUB_VERSION=9.9.9 cl_doctor 2>/dev/null)" in
 esac
 STUB_NO_SCHEMA=1 cl_doctor >/dev/null 2>&1
 check "doctor fails when a required flag is missing" "$?" "1"
+
+# ------------------------------------------------- the approval binds to a plan ----
+# An approval describes the plan text that was read. If plan.md moves underneath it, the
+# approval is void — enforced at the consumer, not by remembering to delete a file.
+cl_record_verdict w1 plan approve "bound to this plan"
+echo "a plan somebody edited by hand" >> "$CL_STATE/w1.plan.md"
+cl_impl w1 >/dev/null 2>&1
+check "impl refuses an approval whose plan changed on disk" "$?" "2"
+
+# --------------------------------------------------- reviewing nothing at all ----
+cl_review_human never-ran >/dev/null 2>&1
+check "human review refuses when impl never ran" "$?" "2"
+
+# ------------------------------------------------------------- dispatcher ----
+bash "$LIB" status >/dev/null 2>&1;      check "dispatcher runs a known verb"   "$?" "0"
+bash "$LIB" not-a-verb >/dev/null 2>&1;  check "dispatcher rejects an unknown verb" "$?" "2"
+bash "$LIB" >/dev/null 2>&1;             check "dispatcher rejects an empty verb"   "$?" "2"
 
 # ------------------------------------------------------------- writer lock ----
 cl_record_verdict w1 plan approve "re-approved for the lock tests"

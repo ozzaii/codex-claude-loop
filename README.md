@@ -68,8 +68,9 @@ something else, but nice" is a blocking finding rather than a shrug.
 
 ## Two lanes, pipelined
 
-Implementation is the only serialized step, guarded by a `mkdir` lock. Planning the next
-brief and reviewing the previous diff are read-only, so they overlap it:
+The code's contribution here is the lock, not a scheduler: implementation is the only
+serialized step, so the read-only phases can safely overlap it. Overlapping them is
+something the orchestrator does, and the skill instructs Claude to do it.
 
 ```
 impl(N)        [======= writes tree, lock held =======]
@@ -85,7 +86,11 @@ Claude.
 A gate that always approves is worse than no gate.
 
 - `cl_impl` refuses unless the plan verdict is `approve`
+- an approval is bound to the plan text that was read: edit `plan.md` afterwards and the
+  approval stops counting, because the verdict carries the plan's hash
 - `cl_impl` refuses without a stored thread id, and never falls back to `resume --last`
+- `cl_review_human` refuses when implementation never ran, rather than reviewing an
+  empty diff and inviting an approval
 - a fresh `cl_plan` deletes both verdicts, `cl_revise` deletes the review verdict
 - a failed autonomous gate returns rc 2 and leaves no stale verdict behind
 - `approve` plus a non-empty `blocking[]` becomes `revise`, rewritten in the file
@@ -142,7 +147,7 @@ Run `cl_selfreview` on day one: Codex tearing this harness apart before you trus
 
 ```bash
 ./gates.sh             # smoke (bash + zsh) + shellcheck + manifest validation
-bash test/smoke.sh     # 27 assertions, no Codex quota spent
+bash test/smoke.sh     # 33 assertions, no Codex quota spent
 ```
 
 The suite drives the whole loop against a stub `codex` and asserts that the gates gate:

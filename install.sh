@@ -46,7 +46,8 @@ echo "downloading ${REPO}@${REF} ..."
 curl -fsSL "https://codeload.github.com/${REPO}/tar.gz/${REF}" | tar -xzf - -C "$tmp" \
   || { echo "download failed - check the ref '${REF}'" >&2; exit 1; }
 
-src="$(find "$tmp" -type d -path "*/plugin/skills/$NAME" -maxdepth 5 | head -1)"
+# -maxdepth before the other primaries: GNU find warns when it comes later
+src="$(find "$tmp" -maxdepth 5 -type d -path "*/plugin/skills/$NAME" | head -1)"
 [ -n "$src" ] || { echo "archive layout unexpected: no plugin/skills/$NAME inside" >&2; exit 1; }
 
 mkdir -p "$DEST"

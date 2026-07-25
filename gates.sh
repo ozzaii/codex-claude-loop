@@ -16,9 +16,11 @@ if command -v shellcheck >/dev/null; then
 else echo "(shellcheck not installed — skipped)"; fi
 
 step "manifests"
-for f in .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin/skills/codex-claude-loop/schemas/verdict.schema.json; do
-  if command -v jq >/dev/null; then jq -e . "$f" >/dev/null && echo "  ok   $f" || { echo "  BAD  $f"; fail=1; }; fi
-done
+if command -v jq >/dev/null; then
+  for f in .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin/skills/codex-claude-loop/schemas/verdict.schema.json; do
+    jq -e . "$f" >/dev/null && echo "  ok   $f" || { echo "  BAD  $f"; fail=1; }
+  done
+else echo "(jq not installed — manifest gate SKIPPED, not passed)"; fail=1; fi
 if command -v claude >/dev/null; then
   claude plugin validate . >/dev/null 2>&1        && echo "  ok   marketplace manifest" || { echo "  BAD  marketplace manifest"; fail=1; }
   claude plugin validate ./plugin >/dev/null 2>&1 && echo "  ok   plugin manifest"      || { echo "  BAD  plugin manifest";      fail=1; }
