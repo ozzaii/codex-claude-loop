@@ -110,7 +110,9 @@ A gate that always approves is worse than no gate.
 - `cl_impl` refuses without a stored thread id, and never falls back to `resume --last`
 - review refuses when no implementation succeeded, and while a writer holds the lock
 - `cl_release` refuses unless the review approved *this* tree: it compares the base sha
-  and a hash of HEAD plus every uncommitted and untracked byte
+  and a hash of HEAD plus every uncommitted and untracked byte, and it refuses outright
+  when any path carries `assume-unchanged` or `skip-worktree`, because a lying index would
+  otherwise hold that digest still while the file changed
 - `cl_revise` keeps every round's blocking items, and each later review is handed them
   with instructions to judge intent rather than wording: a fix that satisfies the sentence
   and misses the point is still blocking

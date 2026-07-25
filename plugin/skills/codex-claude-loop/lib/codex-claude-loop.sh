@@ -218,7 +218,20 @@ _cl_plan_sha() { _cl_sha256_file "$CL_STATE/$1.plan.md"; }
 # `git diff HEAD` both describe an edited untracked file identically before and after the
 # edit, which would let a tree move underneath an approval unnoticed.
 _cl_tree_id() {
-  local head porc diff unt f
+  local head porc diff unt f lying
+  # The index can be told to lie. `git update-index --assume-unchanged <path>` (and
+  # --skip-worktree) make status and diff ignore real edits to that path, so a file can be
+  # rewritten after a review while this digest stays byte-identical. A workspace-write
+  # Codex can run that command. Hashing every tracked file to work around it costs a
+  # process per file, so instead we detect the lie and refuse to produce an id at all:
+  # a check that cannot be trusted reports failure, never success.
+  lying="$(git -C "$CL_REPO" ls-files -v 2>/dev/null | grep -c '^[a-zS]' )"
+  case "$lying" in ''|*[!0-9]*) lying=0 ;; esac
+  if [ "$lying" != 0 ]; then
+    _cl_log "tree: $lying path(s) carry assume-unchanged or skip-worktree, so git will not report edits to them."
+    _cl_log "tree: clear them before trusting any approval — git ls-files -v | grep '^[a-zS]'"
+    return 1
+  fi
   head="$(git -C "$CL_REPO" rev-parse HEAD 2>/dev/null)" || return 1
   porc="$(git -C "$CL_REPO" status --porcelain=v1 -uall 2>/dev/null)"
   diff="$(git -C "$CL_REPO" diff HEAD 2>/dev/null)"

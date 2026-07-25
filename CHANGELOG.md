@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1 — 2026-07-25
+
+**Gate 2 could be walked past with one git command.** A landscape scout found it and I
+reproduced it against this repo: `git update-index --assume-unchanged <path>` makes the
+index lie, so `git status` and `git diff HEAD` report nothing while the file is rewritten,
+and `_cl_tree_id` returned a byte-identical digest. `cl_release` would then approve a tree
+edited after its review. A `workspace-write` Codex can run that command.
+
+Hashing every tracked file to route around the index costs a process per file, so instead
+the tree id refuses when any path carries `assume-unchanged` or `skip-worktree`, and names
+the paths. A check that cannot be trusted reports failure, never success.
+
+- 58 → 60 assertions, including the reproduction itself
+
 ## 0.3.0 — 2026-07-25
 
 **Intent drift.** A reader of the launch thread described the failure this loop did not

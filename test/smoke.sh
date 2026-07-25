@@ -168,6 +168,20 @@ echo "someone edited the tree afterwards" >> "$CL_REPO/IMPLEMENTED.txt"
 cl_release w1 >/dev/null 2>&1; check "release refuses after the tree moved post-approval" "$?" "2"
 git -C "$CL_REPO" checkout -- . 2>/dev/null; echo "implemented" > "$CL_REPO/IMPLEMENTED.txt"
 
+# A tracked file marked assume-unchanged is invisible to status and diff, so the digest
+# stays identical while the file changes. Detect the lie instead of trusting the index.
+git -C "$CL_REPO" add IMPLEMENTED.txt 2>/dev/null
+git -C "$CL_REPO" -c user.email=t@t -c user.name=t commit -qm impl 2>/dev/null
+before="$(_cl_tree_id)"
+git -C "$CL_REPO" update-index --assume-unchanged IMPLEMENTED.txt 2>/dev/null
+echo "smuggled" >> "$CL_REPO/IMPLEMENTED.txt"
+after="$(_cl_tree_id)" ; rc=$?
+[ "$rc" = 0 ] && [ "$after" = "$before" ] && bad "a lying index cannot forge an unchanged tree" \
+                                          || ok  "a lying index cannot forge an unchanged tree"
+cl_release w1 >/dev/null 2>&1; check "release refuses while the index is lying" "$?" "2"
+git -C "$CL_REPO" update-index --no-assume-unchanged IMPLEMENTED.txt 2>/dev/null
+git -C "$CL_REPO" checkout -- IMPLEMENTED.txt 2>/dev/null
+
 # --------------------------------------------------------------- revise -------
 cl_revise w1 "the retry must be idempotent, not just present" >/dev/null 2>&1
 check "revise clears the review verdict" "$(cl_verdict w1 review)" ""
