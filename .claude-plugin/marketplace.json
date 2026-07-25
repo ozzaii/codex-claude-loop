@@ -1,0 +1,26 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "codex-loop",
+  "metadata": {
+    "description": "The gated Claude x Codex build loop — plan gate, persistent implementer thread, diff review gate, one-writer lock."
+  },
+  "owner": {
+    "name": "Kaan Ozkan",
+    "url": "https://github.com/ozzaii"
+  },
+  "plugins": [
+    {
+      "name": "codex-loop",
+      "description": "Delegate serious multi-file work to Codex CLI under two hard gates: Claude approves the plan Codex authored, Codex implements that same plan from the SAME persistent thread, Claude reviews the diff against it. Pipelined two-lane driver, mkdir writer lock, schema-checked verdicts.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Kaan Ozkan",
+        "url": "https://github.com/ozzaii"
+      },
+      "source": "./plugin",
+      "category": "workflow",
+      "homepage": "https://github.com/ozzaii/codex-loop",
+      "tags": ["codex", "orchestration", "multi-agent", "delegation", "code-review", "skills"]
+    }
+  ]
+}

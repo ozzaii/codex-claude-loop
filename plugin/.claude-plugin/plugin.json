@@ -1,0 +1,12 @@
+{
+  "name": "codex-loop",
+  "version": "0.1.0",
+  "description": "Gated Claude x Codex build loop: Codex plans and implements from one persistent thread, Claude approves the plan and reviews the diff.",
+  "author": {
+    "name": "Kaan Ozkan",
+    "url": "https://github.com/ozzaii"
+  },
+  "homepage": "https://github.com/ozzaii/codex-loop",
+  "license": "MIT",
+  "keywords": ["codex", "orchestration", "multi-agent", "code-review", "delegation"]
+}

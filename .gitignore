@@ -1,0 +1,7 @@
+.DS_Store
+*.jsonl
+*.verdict
+*.session
+*.base.sha
+.codex-loop/
+node_modules/

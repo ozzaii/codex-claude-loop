@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "blocking"],
+  "properties": {
+    "verdict": {
+      "enum": ["approve", "revise"],
+      "description": "approve = ready to proceed; revise = at least one blocking item must be fixed and the gate re-run"
+    },
+    "summary": {
+      "type": "string",
+      "description": "One-paragraph judgment: what was checked and why the verdict"
+    },
+    "blocking": {
+      "type": "array",
+      "description": "Must be empty for verdict=approve. Each item is a concrete defect that blocks proceeding.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["where", "issue", "fix"],
+        "properties": {
+          "where": { "type": "string", "description": "file:line or plan-step this blocks on" },
+          "issue": { "type": "string", "description": "the concrete defect / plan deviation / correctness or safety hole" },
+          "fix": { "type": "string", "description": "the specific change that resolves it" }
+        }
+      }
+    },
+    "plan_deviations": {
+      "type": "array",
+      "description": "Places the implementation diverged from the approved plan (empty if faithful)",
+      "items": { "type": "string" }
+    },
+    "nits": {
+      "type": "array",
+      "description": "Non-blocking suggestions",
+      "items": { "type": "string" }
+    }
+  }
+}
