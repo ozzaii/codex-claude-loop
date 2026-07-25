@@ -132,6 +132,7 @@ you trust it with your tree.
 ## Tests
 
 ```bash
+./gates.sh             # smoke (bash + zsh) + shellcheck + manifest validation
 bash test/smoke.sh     # 20 assertions, no Codex quota spent
 zsh  test/smoke.sh     # same assertions under zsh (the harness is sourced from both)
 ```
