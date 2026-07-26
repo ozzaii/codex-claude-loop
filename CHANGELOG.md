@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Run the full gate suite on Ubuntu and macOS for every push and pull request.
+- Add a Claude Code `PreToolUse` guard that refuses normal `git commit`, `push`, `merge`,
+  and `tag` calls while a successful implementation lacks current plan/review approval.
+- Bind new review verdicts to the reviewed content tree as well as HEAD, so committing
+  those exact bytes keeps the approval valid for a later push while any content edit
+  still voids it.
+- Add `cl_prompt` and `/codex-claude-loop:prompt`: follow-up requests resume the lane's
+  exact stored Codex session, wait behind its writer lock, keep distinct transcripts, and
+  invalidate review state without cold-starting or competing in the worktree.
+- Publish `impl.ok` and revise carryover before releasing the writer lock, so a queued
+  prompt cannot enter between repository completion and the lane's terminal state update.
+- Keep lock cleanup silent and idempotent under zsh when the lock was already removed.
+- Correct the documented smoke-suite count from 53 to 92 assertions.
+
 ## 0.6.0 — 2026-07-25
 
 Codex reviewed v0.5.0 and opened with "not release-ready" again. Three of its findings held

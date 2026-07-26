@@ -38,11 +38,14 @@ via env (`CL_REPO`, `CL_IMPL_MODEL`, `CL_PLAN_MODEL`, `CL_REVIEW_MODEL`, `CL_SAN
    the plan holds. Prompt yourself to *refute* it, not rubber-stamp it.
 3. **Codex implements:** `cl_impl <slug>` → resumes the thread, writes code, runs tests,
    holds the writer lock, and records a success marker only if codex exited clean.
-4. **Claude reviews the diff:** `cl_review_human <slug>` (rich review you read) — or
+4. **Optional same-session follow-up:** `cl_prompt <slug> "<additional request>"` queues
+   behind the lane's writer lock, resumes the exact stored thread, and prints Codex's
+   response. It requires a successful implementation and makes re-review mandatory.
+5. **Claude reviews the diff:** `cl_review_human <slug>` (rich review you read) — or
    inspect `git diff <base>` yourself. Judge it *against the plan*. Approve
    (`cl_record_verdict <slug> review approve "why"`) or send the blocking items back into
    the same thread with `cl_revise <slug> "…"` and re-review. Loop until clean.
-5. **Release:** `cl_release <slug>` confirms both gates still hold for the tree as it is
+6. **Release:** `cl_release <slug>` confirms both gates still hold for the tree as it is
    right now, and refuses otherwise. Then changelog, tag, merge, deploy (honor the
    project's own deploy gate).
 
@@ -59,8 +62,8 @@ loop moving unattended — but a real orchestrator review is the standard.
 
 ## Rails (load-bearing)
 
-- **One writer.** Never run two `cl_impl` concurrently — the lock blocks it; don't bypass.
-  Two Codex threads writing the same tree = corruption.
+- **One writer.** `cl_impl`, `cl_revise`, and `cl_prompt` share one lock; don't bypass it.
+  Two Codex processes writing the same tree = corruption.
 - **Never review a tree that is being written.** Both review paths refuse while the lock
   is held. To genuinely overlap review and implementation, give each lane its own
   worktree and its own `CL_REPO`.
@@ -74,6 +77,10 @@ loop moving unattended — but a real orchestrator review is the standard.
 - **Approvals are bound to what they judged.** Editing the plan voids its approval;
   changing the tree voids the review approval. If a re-approval is refused, read the
   reason rather than deleting state to make it pass.
+- **The plugin guards git publication.** Normal Claude Code Bash calls for `git commit`,
+  `push`, `merge`, and `tag` are refused while a successful implementation is not covered
+  by both current approvals. The standalone skill install has no hook; neither path binds
+  a human terminal or deliberately wrapped git commands.
 - **Verify model variants before architecting on them.** Set `CL_IMPL_MODEL` /
   `CL_REVIEW_MODEL` only to models you have actually confirmed behave as you assume.
 - **Tail the log within a minute of launching any lane.** A bad flag makes `codex exec`

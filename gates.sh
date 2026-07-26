@@ -16,16 +16,21 @@ else echo "  MISS zsh not installed — the harness is sourced from zsh, so this
 
 step "shellcheck"
 if command -v shellcheck >/dev/null; then
-  shellcheck -S error plugin/skills/codex-claude-loop/lib/codex-claude-loop.sh test/smoke.sh gates.sh; verdict $?
+  shellcheck -S error plugin/skills/codex-claude-loop/lib/codex-claude-loop.sh \
+    plugin/hooks/cl-git-guard.sh test/smoke.sh gates.sh; verdict $?
   shellcheck -S error -s sh install.sh; verdict $?
 else echo "  MISS shellcheck not installed"; fail=1; fi
 
 step "manifests"
 if command -v jq >/dev/null; then
-  for f in .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin/skills/codex-claude-loop/schemas/verdict.schema.json; do
+  for f in .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json \
+    plugin/hooks/hooks.json plugin/skills/codex-claude-loop/schemas/verdict.schema.json; do
     jq -e . "$f" >/dev/null && echo "  ok   $f" || { echo "  BAD  $f"; fail=1; }
   done
 else echo "(jq not installed — manifest gate SKIPPED, not passed)"; fail=1; fi
+[ -x plugin/hooks/cl-git-guard.sh ] \
+  && echo "  ok   git guard is executable" \
+  || { echo "  BAD  plugin/hooks/cl-git-guard.sh is not executable"; fail=1; }
 if command -v claude >/dev/null; then
   claude plugin validate . >/dev/null 2>&1        && echo "  ok   marketplace manifest" || { echo "  BAD  marketplace manifest"; fail=1; }
   claude plugin validate ./plugin >/dev/null 2>&1 && echo "  ok   plugin manifest"      || { echo "  BAD  plugin manifest";      fail=1; }

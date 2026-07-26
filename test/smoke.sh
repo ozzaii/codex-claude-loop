@@ -25,7 +25,7 @@ cat > "$TMP/bin/codex" <<'STUB'
 #!/usr/bin/env bash
 # codex-cli stand-in. Knobs that simulate a CLI update or a bad call:
 #   STUB_VERSION, STUB_EVENT (tier1|tier2|none), STUB_NO_SCHEMA, STUB_NO_RESUME,
-#   STUB_VERDICT, STUB_EXPECT_SESSION, STUB_NO_AUTH, STUB_NO_LOGIN_CMD
+#   STUB_VERDICT, STUB_EXPECT_SESSION, STUB_PROMPT_OUT, STUB_NO_AUTH, STUB_NO_LOGIN_CMD
 args=" $* "
 case "$args" in *" --version "*) echo "codex-cli ${STUB_VERSION:-0.144.2} (stub)"; exit 0 ;; esac
 case "$args" in
@@ -49,9 +49,10 @@ case "$args" in
 esac
 
 # contract: global flags must precede `resume`, and -C/-s must be present
-seen_resume=0; sess=""; out=""; schema=""; cdir=""; sandbox=""
+seen_resume=0; sess=""; prompt=""; out=""; schema=""; cdir=""; sandbox=""
 for a in "$@"; do
   if [ "$seen_resume" = 1 ] && [ -z "$sess" ]; then sess="$a"; continue; fi
+  if [ "$seen_resume" = 1 ]; then prompt="$a"; continue; fi
   case "$a" in
     resume) seen_resume=1 ;;
     -C|-s|-o|--json|--output-schema)
@@ -76,6 +77,7 @@ if [ "$seen_resume" = 1 ]; then
     echo "error: resumed '$sess', expected '$STUB_EXPECT_SESSION'" >&2; exit 2
   fi
 fi
+[ -n "${STUB_PROMPT_OUT:-}" ] && printf '%s\n' "$prompt" > "$STUB_PROMPT_OUT"
 
 cat > /dev/null    # drain stdin (the prompt)
 if [ -n "$schema" ]; then
@@ -319,6 +321,57 @@ bash "$LIB" not-a-verb >/dev/null 2>&1;  check "dispatcher rejects an unknown ve
 bash "$LIB" >/dev/null 2>&1;             check "dispatcher rejects an empty verb"    "$?" "2"
 bash "$LIB" plan >/dev/null 2>&1;        check "dispatched verb with no args returns usage, not a crash" "$?" "2"
 
+# ------------------------------------------------------- same-session prompt ----
+cl_plan p1 "$TMP/brief.md" >/dev/null 2>&1
+cl_record_verdict p1 plan approve "prompt fixture"
+cl_impl p1 >/dev/null 2>&1
+cl_review_human p1 >/dev/null 2>&1
+cl_record_verdict p1 review approve "standing review"
+
+p1_session="$(cat "$CL_STATE/p1.session")"
+prompt_capture="$TMP/p1.prompt.txt"
+prompt_response="$(STUB_EXPECT_SESSION="$p1_session" STUB_PROMPT_OUT="$prompt_capture" \
+  cl_prompt p1 "add the missing regression test" 2>/dev/null)"
+prompt_rc=$?
+case "$(cat "$prompt_capture" 2>/dev/null)" in
+  *"+request from the orchestrator"*add*the*missing*regression*test*)
+    check "prompt resumes the stored session and forwards the request" "$prompt_rc" "0" ;;
+  *) bad "prompt resumes the stored session and forwards the request" ;;
+esac
+check "prompt prints Codex's final response" "$prompt_response" "wrote IMPLEMENTED.txt"
+check "prompt invalidates the standing review approval" "$(cl_verdict p1 review)" ""
+[ -f "$CL_STATE/p1.impl.ok" ] && ok "successful prompt restores the implementation marker" \
+                               || bad "successful prompt restores the implementation marker"
+
+# A second request submitted while an implementation owns the lane must wait for it, then
+# resume the same session. Remove impl.ok to model the in-flight state; the fake writer
+# creates it only when it finishes. The prompt must check that marker AFTER waiting, not
+# reject from the stale pre-wait view.
+mkdir -p "$CL_STATE/impl.lock.d"
+rm -f "$CL_STATE/p1.impl.ok"
+p1_base="$(cat "$CL_STATE/p1.base.sha")"
+( sleep 1; printf '%s\n' "$p1_base" > "$CL_STATE/p1.impl.ok" ) & live=$!
+printf '%s\n' "$live" > "$CL_STATE/impl.lock.d/pid"
+printf '%s\n' "$live" > "$CL_STATE/impl.lock.d/child"
+queued_capture="$TMP/p1.queued.txt"
+CL_LOCK_TIMEOUT=10 STUB_EXPECT_SESSION="$p1_session" STUB_PROMPT_OUT="$queued_capture" \
+  cl_prompt p1 "queued follow-up" >/dev/null 2>&1
+queued_rc=$?
+wait "$live" 2>/dev/null
+case "$(cat "$queued_capture" 2>/dev/null)" in
+  *"queued follow-up"*) check "prompt waits behind the live lane instead of competing" "$queued_rc" "0" ;;
+  *) bad "prompt waits behind the live lane instead of competing" ;;
+esac
+
+prompt_logs="$(find "$CL_STATE" -maxdepth 1 -name 'p1.prompt.*.jsonl' | wc -l | tr -d ' ')"
+check "each prompt keeps a distinct durable transcript" "$prompt_logs" "2"
+
+STUB_EXPECT_SESSION=deadbeefdeadbeef cl_prompt p1 "this resume must fail" >/dev/null 2>&1
+prompt_rc=$?
+[ "$prompt_rc" = 2 ] && [ ! -f "$CL_STATE/p1.impl.ok" ] \
+  && ok "a failed prompt leaves no successful implementation marker" \
+  || bad "a failed prompt leaves no successful implementation marker"
+
 # ------------------------------------------------------------- writer lock ----
 cl_record_verdict w1 plan approve "re-approved for the lock tests"
 
@@ -346,6 +399,11 @@ kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
 cl_lock_recover >/dev/null 2>&1; check "recover clears a lock once nothing is alive" "$?" "0"
 [ -d "$CL_STATE/impl.lock.d" ] && bad "recover removed the lock" || ok "recover removed the lock"
 
+release_noise="$(_cl_lock_release 2>&1)"
+[ -z "$release_noise" ] && ok "release is silent when no lock exists" \
+                       || bad "release is silent when no lock exists (got '$release_noise')"
+
+mkdir -p "$CL_STATE/impl.lock.d"; echo $$ > "$CL_STATE/impl.lock.d/pid"   # ours
 _cl_lock_release
 [ -d "$CL_STATE/impl.lock.d" ] && bad "owner may release its own lock" || ok "owner may release its own lock"
 
@@ -368,6 +426,95 @@ CHILD
 # ------------------------------------------------------------ empty state -----
 ( CL_STATE="$TMP/fresh" ; mkdir -p "$CL_STATE" ; cl_status >/dev/null 2>&1 )
 check "status on an empty state does not abort (zsh glob)" "$?" "0"
+
+# --------------------------------------------------- git publication guard -----
+GUARD_HOOK="$ROOT/plugin/hooks/cl-git-guard.sh"
+GUARD_REPO="$TMP/guard-repo"
+GUARD_STATE="$TMP/guard-state"
+mkdir -p "$GUARD_REPO"
+git -C "$GUARD_REPO" init -q
+printf 'before\n' > "$GUARD_REPO/app.txt"
+printf 'before\n' > "$GUARD_REPO/extra.txt"
+git -C "$GUARD_REPO" add app.txt extra.txt
+git -C "$GUARD_REPO" -c user.email=t@t -c user.name=t commit -qm base
+guard_base="$(git -C "$GUARD_REPO" rev-parse HEAD)"
+printf 'reviewed implementation\n' > "$GUARD_REPO/app.txt"
+printf 'reviewed companion\n' > "$GUARD_REPO/extra.txt"
+
+(
+  CL_REPO="$GUARD_REPO"; CL_STATE="$GUARD_STATE"; export CL_REPO CL_STATE
+  # shellcheck source=/dev/null
+  . "$LIB"
+  printf '# approved plan\n' > "$CL_STATE/guard.plan.md"
+  printf '%s\n' "$guard_base" > "$CL_STATE/guard.base.sha"
+  printf '%s\n' "$guard_base" > "$CL_STATE/guard.impl.ok"
+  printf '00000000-0000-4000-8000-000000000099\n' > "$CL_STATE/guard.session"
+  _cl_plan_sha guard > "$CL_STATE/guard.shown.plan"
+  cl_record_verdict guard plan approve "fixture" >/dev/null
+)
+
+guard_commit_input="$(jq -n --arg cwd "$GUARD_REPO" '{
+  session_id:"smoke", cwd:$cwd, hook_event_name:"PreToolUse", tool_name:"Bash",
+  tool_input:{command:"git commit -m reviewed"}
+}')"
+guard_push_input="$(jq -n --arg cwd "$GUARD_REPO" '{
+  session_id:"smoke", cwd:$cwd, hook_event_name:"PreToolUse", tool_name:"Bash",
+  tool_input:{command:"git push"}
+}')"
+guard_out="$(CL_STATE="$GUARD_STATE" "$GUARD_HOOK" commit <<< "$guard_commit_input" 2>&1)"
+check "git guard blocks an implementation with no review approval" \
+  "$(printf '%s' "$guard_out" | jq -r '.hookSpecificOutput.permissionDecision' 2>/dev/null)" "deny"
+
+guard_out="$(CL_GIT_GUARD=0 CL_STATE="$GUARD_STATE" "$GUARD_HOOK" commit <<< "$guard_commit_input" 2>&1)"
+guard_rc=$?
+[ "$guard_rc" = 0 ] && [ -z "$guard_out" ] && ok "git guard has an explicit session opt-out" \
+                                            || bad "git guard has an explicit session opt-out"
+
+(
+  CL_REPO="$GUARD_REPO"; CL_STATE="$GUARD_STATE"; export CL_REPO CL_STATE
+  # shellcheck source=/dev/null
+  . "$LIB"
+  _cl_tree_id > "$CL_STATE/guard.shown.tree"
+  cl_record_verdict guard review approve "clean" >/dev/null
+)
+guard_out="$(CL_STATE="$GUARD_STATE" "$GUARD_HOOK" commit <<< "$guard_commit_input" 2>&1)"
+[ -z "$guard_out" ] && ok "git guard allows content covered by both gates" \
+                     || bad "git guard allows content covered by both gates (got '$guard_out')"
+
+git -C "$GUARD_REPO" add app.txt
+git -C "$GUARD_REPO" -c user.email=t@t -c user.name=t commit -qm partial
+(
+  CL_REPO="$GUARD_REPO"; CL_STATE="$GUARD_STATE"; export CL_REPO CL_STATE
+  # shellcheck source=/dev/null
+  . "$LIB"
+  cl_review_approved guard >/dev/null 2>&1
+)
+check "review approval survives a content-preserving partial commit" "$?" "0"
+
+guard_out="$(CL_STATE="$GUARD_STATE" "$GUARD_HOOK" push <<< "$guard_push_input" 2>&1)"
+check "git guard blocks pushing only part of the reviewed tree" \
+  "$(printf '%s' "$guard_out" | jq -r '.hookSpecificOutput.permissionDecision' 2>/dev/null)" "deny"
+
+git -C "$GUARD_REPO" add extra.txt
+git -C "$GUARD_REPO" -c user.email=t@t -c user.name=t commit -qm remainder
+guard_out="$(CL_STATE="$GUARD_STATE" "$GUARD_HOOK" push <<< "$guard_push_input" 2>&1)"
+[ -z "$guard_out" ] && ok "git guard allows a separate push after the reviewed commit" \
+                     || bad "git guard allows a separate push after the reviewed commit (got '$guard_out')"
+
+printf 'changed after review\n' > "$GUARD_REPO/app.txt"
+guard_out="$(CL_STATE="$GUARD_STATE" "$GUARD_HOOK" commit <<< "$guard_commit_input" 2>&1)"
+check "git guard blocks content changed after review" \
+  "$(printf '%s' "$guard_out" | jq -r '.hookSpecificOutput.permissionDecision' 2>/dev/null)" "deny"
+
+GUARD_EMPTY_STATE="$TMP/guard-empty-state"
+guard_out="$(CL_STATE="$GUARD_EMPTY_STATE" "$GUARD_HOOK" commit <<< "$guard_commit_input" 2>&1)"
+[ -z "$guard_out" ] && [ ! -e "$GUARD_EMPTY_STATE" ] \
+  && ok "git guard leaves repos with no loop state untouched" \
+  || bad "git guard leaves repos with no loop state untouched"
+
+guard_out="$("$GUARD_HOOK" commit <<< '{}' 2>&1)"
+check "git guard fails closed on malformed hook input" \
+  "$(printf '%s' "$guard_out" | jq -r '.hookSpecificOutput.permissionDecision' 2>/dev/null)" "deny"
 
 echo "== $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

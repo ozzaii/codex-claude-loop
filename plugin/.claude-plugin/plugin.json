@@ -1,7 +1,7 @@
 {
   "name": "codex-claude-loop",
   "version": "0.6.0",
-  "description": "Gated Claude x Codex build loop: Codex plans and implements from one persistent thread, Claude approves the plan and reviews the diff.",
+  "description": "Gated Claude x Codex build loop: Codex plans, implements, and accepts queued follow-ups from one persistent thread; Claude approves the plan and reviews the diff.",
   "author": {
     "name": "Kaan Ozkan",
     "url": "https://github.com/ozzaii"

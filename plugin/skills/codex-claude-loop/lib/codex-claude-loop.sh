@@ -75,7 +75,12 @@ CL_LOCK="${CL_LOCK:-$CL_STATE/impl.lock.d}"     # serializes the single writer
 
 # State is owner-only. `chmod` the directory rather than `umask` the shell: this file is
 # sourced into interactive shells, and a umask would follow the user out of the harness.
-mkdir -p "$CL_STATE" && chmod 700 "$CL_STATE" 2>/dev/null
+# The git publication hook is a read-only consumer and runs in every repo where the
+# plugin is enabled. It opts out of creation so a harmless `git commit` in a repo with no
+# loop state does not leave an empty directory behind.
+if [ "${CL_STATE_READ_ONLY:-0}" != 1 ]; then
+  mkdir -p "$CL_STATE" && chmod 700 "$CL_STATE" 2>/dev/null
+fi
 
 # A slug names files under CL_STATE. Anything with a separator or `..` would write
 # outside it, so the shape is enforced at every public entry point.
@@ -211,14 +216,14 @@ _cl_base() {      # <slug> -> base sha recorded by cl_impl, rc 1 when impl never
 }
 _cl_plan_sha() { _cl_sha256_file "$CL_STATE/$1.plan.md"; }
 
-# An identifier for the exact working state a review looked at: HEAD plus everything
-# uncommitted. A review approval that no longer matches this describes a tree that has
-# since moved.
+# The content tree for the exact working state a review looked at. This is kept separately
+# from HEAD so a reviewed dirty tree remains recognizable after those exact bytes are
+# committed: committing changes history representation, not the reviewed content.
 # Untracked files need their CONTENT hashed, not just their names: `git status` and
 # `git diff HEAD` both describe an edited untracked file identically before and after the
 # edit, which would let a tree move underneath an approval unnoticed.
-_cl_tree_id() {
-  local head idx tree lying
+_cl_tree_sha() {
+  local idx tree lying
   # The index can be told to lie. `git update-index --assume-unchanged <path>` (and
   # --skip-worktree) make status and diff ignore real edits to that path, so a file can be
   # rewritten after a review while this digest stays byte-identical. A workspace-write
@@ -232,8 +237,6 @@ _cl_tree_id() {
     _cl_log "tree: clear them before trusting any approval — git ls-files -v | grep '^[a-zS]'"
     return 1
   fi
-  head="$(git -C "$CL_REPO" rev-parse HEAD 2>/dev/null)" || return 1
-
   # Let GIT hash the working tree. A hand-rolled loop over `ls-files --others` reads the
   # names git prints, and git QUOTES any name needing escapes ("evil\nname.txt"), so the
   # quoted string reaches hash-object, which cannot find it, and that file then contributes
@@ -253,7 +256,23 @@ _cl_tree_id() {
   fi
   rm -f "$idx"
   [ -n "$tree" ] || return 1
+  printf '%s\n' "$tree"
+}
+
+# An identifier for the exact repository state: HEAD plus the working content tree.
+# This remains the strict binding used at read/approval time. Stored review verdicts also
+# carry the raw content tree, allowing a later content-equivalent commit without making
+# the review pretend that new bytes appeared.
+_cl_tree_id_for() {  # <tree-sha>
+  local head tree="${1:-}"
+  [ -n "$tree" ] || return 1
+  head="$(git -C "$CL_REPO" rev-parse HEAD 2>/dev/null)" || return 1
   printf '%s\n%s' "$head" "$tree" | _cl_sha256_stdin
+}
+_cl_tree_id() {
+  local tree
+  tree="$(_cl_tree_sha)" || return 1
+  _cl_tree_id_for "$tree"
 }
 
 cl_verdict() { jq -r '.verdict' "$CL_STATE/$1.${2:-review}.verdict" 2>/dev/null; }
@@ -276,7 +295,7 @@ cl_plan_approved() {  # <slug>
 # The same question for gate 2, against the tree instead of the plan. This is what makes
 # the review a gate rather than a note: cl_release consumes it.
 cl_review_approved() {  # <slug>
-  local v="$CL_STATE/$1.review.verdict" recorded now base rbase
+  local v="$CL_STATE/$1.review.verdict" recorded now base rbase recorded_tree now_tree
   [ -f "$v" ] || return 1
   [ "$(cl_verdict "$1" review)" = approve ] || return 1
   base="$(_cl_base "$1")" || return 1
@@ -284,9 +303,18 @@ cl_review_approved() {  # <slug>
   [ "$rbase" = "$base" ] || { _cl_log "$1: the review approved a different base ($rbase vs $base) — re-review"; return 1; }
   recorded="$(jq -r '.tree_id // empty' "$v" 2>/dev/null)"
   [ -n "$recorded" ] || { _cl_log "$1: the review approval carries no tree id — re-review"; return 1; }
-  now="$(_cl_tree_id)" || { _cl_log "$1: cannot identify the current tree — approval void"; return 1; }
-  [ "$recorded" = "$now" ] || { _cl_log "$1: the tree has CHANGED since it was reviewed — re-review before releasing"; return 1; }
-  return 0
+  now_tree="$(_cl_tree_sha)" || { _cl_log "$1: cannot identify the current tree — approval void"; return 1; }
+  now="$(_cl_tree_id_for "$now_tree")" || { _cl_log "$1: cannot identify the current HEAD — approval void"; return 1; }
+  [ "$recorded" = "$now" ] && return 0
+
+  # A commit of the reviewed working tree changes HEAD and therefore the strict tree id,
+  # but not a byte of the content the reviewer judged. New verdicts carry that content
+  # tree so the publication hook can allow the commit followed by a separate push. Old
+  # verdicts have no such field and retain the stricter pre-upgrade behavior.
+  recorded_tree="$(jq -r '.tree_sha // empty' "$v" 2>/dev/null)"
+  [ -n "$recorded_tree" ] && [ "$recorded_tree" = "$now_tree" ] && return 0
+  _cl_log "$1: the tree has CHANGED since it was reviewed — re-review before releasing"
+  return 1
 }
 
 # ------------------------------------------------------------- codex drivers ----
@@ -469,10 +497,11 @@ cl_record_verdict() {  # <slug> <phase:plan|review> <approve|revise> [notes]
   _cl_slug_ok "$slug" || return 2
   case "$phase"   in plan|review) ;; *) _cl_log "record_verdict: bad phase '$phase'"; return 2 ;; esac
   case "$verdict" in approve|revise) ;; *) _cl_log "record_verdict: bad verdict '$verdict'"; return 2 ;; esac
-  local psha bsha tid
+  local psha bsha tid tree
   psha="$(_cl_plan_sha "$slug" || true)"
   bsha="$(_cl_base "$slug" || true)"
-  tid="$(_cl_tree_id || true)"
+  tree="$(_cl_tree_sha || true)"
+  tid="$(_cl_tree_id_for "$tree" || true)"
   # An approval must be bindable to what was judged. Refuse to record one that cannot be.
   # It must also describe the state that was actually READ: cl_gate_plan and cl_review_human
   # record what they showed, and an approval for anything else is refused rather than
@@ -493,9 +522,11 @@ cl_record_verdict() {  # <slug> <phase:plan|review> <approve|revise> [notes]
               fi ;;
     esac
   fi
-  jq -n --arg v "$verdict" --arg s "$notes" --arg p "$psha" --arg b "$bsha" --arg d "$tid" \
+  jq -n --arg v "$verdict" --arg s "$notes" --arg p "$psha" --arg b "$bsha" \
+        --arg d "$tid" --arg tree "$tree" \
         --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{verdict:$v, summary:$s, blocking:[], plan_sha256:$p, base_sha:$b, tree_id:$d, at:$t}' \
+    '{verdict:$v, summary:$s, blocking:[], plan_sha256:$p, base_sha:$b,
+      tree_id:$d, tree_sha:$tree, at:$t}' \
     > "$CL_STATE/${slug}.${phase}.verdict"
 }
 
@@ -534,13 +565,15 @@ the relevant tests. Report exactly what changed and any deviations with their ju
 ===== APPROVED PLAN =====
 $plantext"
   rc=$?
-  _cl_lock_release
   if [ $rc -eq 0 ]; then
     echo "$base" > "$CL_STATE/${slug}.impl.ok"     # the marker review requires
     _cl_log "impl[$slug]: done (base $base)"
   else
     _cl_log "impl[$slug] FAILED ($CL_STATE/${slug}.impl.jsonl) — no success marker written"
   fi
+  # Publish the terminal lane state before releasing the writer lock. A queued prompt
+  # that acquires next must never observe the gap between "writer exited" and impl.ok.
+  _cl_lock_release
   return $rc
 }
 
@@ -575,7 +608,6 @@ why the finding is wrong.
 ===== BLOCKING =====
 $notes"
   rc=$?
-  _cl_lock_release
   if [ $rc -eq 0 ]; then
     _cl_base "$slug" > "$CL_STATE/${slug}.impl.ok" 2>/dev/null
     # Keep the items. The next review has to judge them on intent, not on wording, and it
@@ -588,6 +620,81 @@ $notes"
   else
     _cl_log "revise[$slug] FAILED"
   fi
+  # Keep the success marker and carryover round in the same serialized transition as the
+  # repository writes. The next queued lane request sees either all of it or none of it.
+  _cl_lock_release
+  return $rc
+}
+
+# cl_prompt <slug> "<additional request>" — continue the lane's exact Codex session.
+#
+# This is deliberately a WRITER phase. It takes the same lock as impl/revise, so a prompt
+# submitted while either is active waits and resumes only after that process exits. The
+# successful implementation marker is checked after acquiring the lock: checking before
+# would reject a prompt queued behind an impl that is about to create it.
+cl_prompt() {
+  local slug="${1:-}"
+  local request="${2:-}" base label label_base out rc n=0
+  _cl_slug_ok "$slug" || return 2
+  [ -n "$request" ] || { _cl_log "usage: cl_prompt <slug> \"<additional request>\""; return 2; }
+  _cl_compat_check
+  _cl_require "prompt[$slug]" resume json out || return 2
+  _cl_session "$slug" >/dev/null || return 2
+
+  # Timestamp + pid keeps every follow-up's transcript instead of overwriting prompt.md.
+  # A suffix covers two sequential calls from the same sourced shell in one second; two
+  # simultaneous callers have different pids before the lock serializes them.
+  label_base="prompt.$(date -u +%Y%m%dT%H%M%SZ).$$"
+  label="$label_base"
+  while [ -e "$CL_STATE/${slug}.${label}.jsonl" ] || [ -e "$CL_STATE/${slug}.${label}.md" ]; do
+    n=$((n+1)); label="$label_base.$n"
+  done
+  out="$CL_STATE/${slug}.${label}.md"
+  _cl_lock_acquire "$CL_STATE/${slug}.${label}.jsonl" || return 2
+
+  # Re-check lane state only after the wait. A live impl/revise may have changed every
+  # marker while this caller was queued behind it.
+  if ! cl_plan_approved "$slug"; then
+    _cl_lock_release
+    _cl_log "prompt[$slug] REFUSED: the plan approval is not valid"
+    return 2
+  fi
+  if [ ! -f "$CL_STATE/${slug}.impl.ok" ]; then
+    _cl_lock_release
+    _cl_log "prompt[$slug] REFUSED: no successful implementation is standing — run cl_impl or repair the failed lane first"
+    return 2
+  fi
+  base="$(_cl_base "$slug")" || {
+    _cl_lock_release
+    _cl_log "prompt[$slug] REFUSED: no implementation base is recorded"
+    return 2
+  }
+
+  # The follow-up may write. Invalidate review state before it starts and restore the
+  # implementation marker only if Codex exits cleanly; a failed partial request must be
+  # reviewed as a failed lane, never as the previous successful implementation.
+  rm -f "$CL_STATE/${slug}.review.verdict" "$CL_STATE/${slug}.impl.ok" "$CL_STATE/${slug}.shown.tree"
+  _cl_log "prompt[$slug]: queued follow-up now running on the stored Codex session (writer lock held)"
+  _cl_codex_resume "$slug" "$label" \
+    "+request from the orchestrator for this same implementation lane:
+$request
+
+Continue from the full session context you already have. Make any required repository
+changes, run the relevant tests, and report exactly what changed or why no change was
+needed. Stay within the approved plan unless the request explicitly narrows it."
+  rc=$?
+
+  if [ $rc -eq 0 ]; then
+    printf '%s\n' "$base" > "$CL_STATE/${slug}.impl.ok"
+    _cl_log "prompt[$slug]: done — review approval cleared; re-review required (response: $out)"
+  else
+    _cl_log "prompt[$slug] FAILED — no success marker written (see $CL_STATE/${slug}.${label}.jsonl)"
+  fi
+  _cl_lock_release
+
+  # Put Codex's answer directly into Claude's tool result; the durable .md remains beside
+  # the JSONL for later inspection.
+  if [ $rc -eq 0 ] && [ -f "$out" ]; then cat "$out"; fi
   return $rc
 }
 
@@ -613,7 +720,7 @@ EOF
 # cl_codex_gate <slug>   — AUTONOMOUS fallback reviewer -> parseable verdict JSON.
 #   Use only when no orchestrator/human is available to judge.
 cl_codex_gate() {  # rc: 0 approve · 1 revise · 2 infra failure
-  local slug="${1:-}" base tmp v nblock tid
+  local slug="${1:-}" base tmp v nblock tid tree
   local jl="$CL_STATE/${slug}.review.jsonl"
   _cl_slug_ok "$slug" || return 2
   [ -f "$CL_STATE/${slug}.impl.ok" ] || { _cl_log "gate[$slug]: no successful implementation to review"; return 2; }
@@ -624,7 +731,8 @@ cl_codex_gate() {  # rc: 0 approve · 1 revise · 2 infra failure
   # A review attempt invalidates the standing approval BEFORE it runs. If this attempt
   # dies, the slug is left unapproved — never carrying an approval for an older tree.
   rm -f "$CL_STATE/${slug}.review.verdict"
-  tid="$(_cl_tree_id)" || { _cl_log "gate[$slug]: cannot identify the tree"; return 2; }
+  tree="$(_cl_tree_sha)" || { _cl_log "gate[$slug]: cannot identify the tree"; return 2; }
+  tid="$(_cl_tree_id_for "$tree")" || { _cl_log "gate[$slug]: cannot identify the current HEAD"; return 2; }
   tmp="$(mktemp "$CL_STATE/${slug}.review.XXXXXX")" || return 2
   _cl_log "review[$slug]: autonomous codex gate (base $base)"
   codex exec $(_cl_model_flag "$CL_REVIEW_MODEL") -C "$CL_REPO" -s "$CL_REVIEW_SANDBOX" --json \
@@ -655,7 +763,8 @@ EOF
     *) _cl_log "gate[$slug]: invalid verdict '$v'"; rm -f "$tmp"; return 2 ;;
   esac
   # bind the verdict to what was reviewed, so cl_release can tell if the tree moved after
-  jq --arg b "$base" --arg d "$tid" '. + {base_sha:$b, tree_id:$d}' "$tmp" > "$tmp.b" && mv "$tmp.b" "$tmp" \
+  jq --arg b "$base" --arg d "$tid" --arg tree "$tree" \
+    '. + {base_sha:$b, tree_id:$d, tree_sha:$tree}' "$tmp" > "$tmp.b" && mv "$tmp.b" "$tmp" \
     || { _cl_log "gate[$slug]: could not bind the verdict to the tree"; rm -f "$tmp" "$tmp.b"; return 2; }
   mv "$tmp" "$CL_STATE/${slug}.review.verdict"
   printf '%s\n' "$v"
@@ -752,12 +861,59 @@ cl_lock_recover() {
 
 _cl_lock_release() {
   local holder=''
-  read -r holder 2>/dev/null < "$CL_LOCK/pid"
+  # zsh reports a failed input redirection before `read` gets to apply its stderr
+  # redirect. Guard the file so cleanup stays silent and idempotent after another path
+  # already removed the lock.
+  [ -f "$CL_LOCK/pid" ] && read -r holder 2>/dev/null < "$CL_LOCK/pid"
   # only the owner may unlock: an unconditional rm here would delete a lock another
   # process legitimately acquired after ours was reclaimed
   if [ -z "$holder" ] || [ "$holder" = "$$" ]; then rm -rf "$CL_LOCK" 2>/dev/null; fi
   [ "$CL_DISPATCHED" = 1 ] && trap - EXIT INT TERM
   return 0
+}
+
+# A push or tag publishes HEAD, not the uncommitted working tree. Require HEAD's content
+# tree itself to be the one the reviewer approved; otherwise a partial commit could leave
+# the total working tree content unchanged while publishing only half the reviewed change.
+_cl_reviewed_head_approved() {  # <slug>
+  local v="$CL_STATE/$1.review.verdict" base rbase recorded_tree head_tree
+  [ -f "$v" ] || return 1
+  [ "$(cl_verdict "$1" review)" = approve ] || return 1
+  base="$(_cl_base "$1")" || return 1
+  rbase="$(jq -r '.base_sha // empty' "$v" 2>/dev/null)"
+  [ "$rbase" = "$base" ] || return 1
+  recorded_tree="$(jq -r '.tree_sha // empty' "$v" 2>/dev/null)"
+  [ -n "$recorded_tree" ] || return 1
+  head_tree="$(git -C "$CL_REPO" rev-parse 'HEAD^{tree}' 2>/dev/null)" || return 1
+  [ "$recorded_tree" = "$head_tree" ]
+}
+
+# Slugs whose successful implementation is not covered by both gates for the state the
+# requested git action consumes. commit/merge operate on the working tree; push/tag
+# publish HEAD. Keeping the predicates here prevents the hook from reimplementing verdict
+# semantics and drifting away from cl_release.
+_cl_pending_publication_slugs() {  # <commit|push|merge|tag>
+  local action="${1:-}" sessions f slug covered
+  case "$action" in commit|push|merge|tag) ;; *) return 2 ;; esac
+  sessions="$(find "$CL_STATE" -maxdepth 1 -name '*.session' 2>/dev/null | sort)"
+  [ -n "$sessions" ] || return 0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    slug="${f##*/}"; slug="${slug%.session}"
+    [ -f "$CL_STATE/${slug}.impl.ok" ] || continue
+    covered=1
+    if cl_plan_approved "$slug" 2>/dev/null; then
+      case "$action" in
+        commit|merge) cl_review_approved "$slug" 2>/dev/null && covered=0 ;;
+        push|tag)     _cl_reviewed_head_approved "$slug" 2>/dev/null && covered=0 ;;
+      esac
+    fi
+    if [ "$covered" != 0 ]; then
+      printf '%s\n' "$slug"
+    fi
+  done <<EOF
+$sessions
+EOF
 }
 
 # --------------------------------------------------------------------- status ----
@@ -832,7 +988,7 @@ in the bash (quoting, locking, session-id capture, exec/resume flags for codex-c
 
 # Direct dispatch (bash codex-claude-loop.sh <fn> args). Sourcing works too, but use bash —
 # the guard below is zsh-safe (BASH_SOURCE unset under zsh won't blow up).
-CL_CMDS="doctor plan gate_plan record_verdict impl review_human codex_gate revise verdict status release wave lock_recover selfreview"
+CL_CMDS="doctor plan gate_plan record_verdict impl review_human codex_gate revise prompt verdict status release wave lock_recover selfreview"
 if [ -n "${BASH_VERSION:-}" ] && [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then
   set -uo pipefail
   CL_DISPATCHED=1          # now the lock may own the shell's EXIT/INT traps

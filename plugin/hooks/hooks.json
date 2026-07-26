@@ -1,0 +1,44 @@
+{
+  "description": "Prevent Claude Code from publishing an implementation that is not covered by the loop's two gates.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit *)",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/cl-git-guard.sh\"",
+            "args": ["commit"],
+            "timeout": 10,
+            "statusMessage": "Checking codex-claude-loop gates"
+          },
+          {
+            "type": "command",
+            "if": "Bash(git push *)",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/cl-git-guard.sh\"",
+            "args": ["push"],
+            "timeout": 10,
+            "statusMessage": "Checking codex-claude-loop gates"
+          },
+          {
+            "type": "command",
+            "if": "Bash(git merge *)",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/cl-git-guard.sh\"",
+            "args": ["merge"],
+            "timeout": 10,
+            "statusMessage": "Checking codex-claude-loop gates"
+          },
+          {
+            "type": "command",
+            "if": "Bash(git tag *)",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/cl-git-guard.sh\"",
+            "args": ["tag"],
+            "timeout": 10,
+            "statusMessage": "Checking codex-claude-loop gates"
+          }
+        ]
+      }
+    ]
+  }
+}

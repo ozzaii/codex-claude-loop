@@ -1,5 +1,7 @@
 # codex-claude-loop
 
+[![CI](https://github.com/ozzaii/codex-claude-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/ozzaii/codex-claude-loop/actions/workflows/ci.yml)
+
 ![Your AI approves its own work. This one can't.](media/linkedin.png)
 
 A gated build loop between Claude Code and Codex CLI. Codex writes the plan, Claude
@@ -75,6 +77,50 @@ Unattended, with nobody to judge: `cl_codex_gate <slug>` runs a Codex reviewer b
 [`verdict.schema.json`](plugin/skills/codex-claude-loop/schemas/verdict.schema.json). It
 defaults to `revise`, and an `approve` carrying blocking items gets downgraded on disk.
 
+## Prompt the same lane
+
+Claude can send a follow-up into the implemented lane without making Codex re-read the
+repository into a cold thread:
+
+```bash
+/codex-claude-loop:prompt auth-rl "add the missing retry regression test"
+# shell equivalent:
+cl_prompt auth-rl "add the missing retry regression test"
+```
+
+`cl_prompt` uses the stored session id with
+[`codex exec resume`](https://learn.chatgpt.com/docs/developer-commands?surface=cli#cli-codex-exec),
+never `--last`. It takes the same writer lock as `cl_impl` and `cl_revise`. If one of
+those is running, the follow-up waits; after that process exits, the lane re-checks its
+state and only then resumes the session. It never injects a second Codex process beside a
+live writer.
+
+The lane must already have an approved plan and a successful implementation. A prompt is
+allowed to write, so it clears the review approval before it runs, restores the
+implementation marker only on a clean Codex exit, keeps a distinct JSONL/Markdown
+transcript, and prints Codex's final response back to Claude. Re-review afterwards.
+
+## Git publication guard
+
+The Claude Code plugin registers a
+[`PreToolUse` hook](https://code.claude.com/docs/en/hooks) for normal
+`git commit`, `git push`, `git merge`, and `git tag` Bash calls. If any successful
+implementation is not covered by current plan and review approvals, the command is denied
+before it runs and the message names the pending slugs.
+
+A verdict stores both the strict HEAD-plus-tree id and the reviewed content tree. That
+means committing the exact reviewed working tree does not manufacture a false "changed
+after review": a later, separate `git push` remains allowed. `push` and `tag` check the
+published HEAD tree rather than the combined working tree, so committing only half the
+reviewed change is still refused. Change one byte after the review and the guard closes
+again.
+
+This guard ships only with the plugin install, not the standalone `curl | sh` skill
+install. It binds ordinary Claude Code Bash calls, not a human terminal, Codex's sandbox,
+or deliberately wrapped/aliased git commands; it is a workflow rail, not a security
+boundary. For an intentional one-session bypass, start Claude Code with
+`CL_GIT_GUARD=0`.
+
 ## Why the same thread
 
 Most Claude + Codex setups paste a plan into a fresh Codex prompt, so Codex implements a
@@ -114,11 +160,16 @@ A gate that always approves is worse than no gate.
   record what they printed, so a plan or a tree that moved between reading and approving
   is refused instead of being approved unread
 - `cl_impl` refuses without a stored thread id, and never falls back to `resume --last`
+- `cl_prompt` refuses without a successful implemented lane, resumes its exact stored
+  session, and sequences behind the same writer lock instead of competing in the worktree
 - review refuses when no implementation succeeded, and while a writer holds the lock
-- `cl_release` refuses unless the review approved *this* tree: it compares the base sha
-  and a hash of HEAD plus every uncommitted and untracked byte, and it refuses outright
-  when any path carries `assume-unchanged` or `skip-worktree`, because a lying index would
-  otherwise hold that digest still while the file changed
+- the Claude Code plugin refuses normal git publication commands while a successful
+  implementation is not covered by both current approvals
+- `cl_release` refuses unless the review approved *this content*: it stores the strict
+  HEAD-plus-tree id and the full reviewed content tree, so an exact commit survives but a
+  byte change does not. It refuses outright when any path carries `assume-unchanged` or
+  `skip-worktree`, because a lying index would otherwise hold that digest still while the
+  file changed
 - `cl_revise` keeps every round's blocking items, and each later review is handed them
   with instructions to judge intent rather than wording: a fix that satisfies the sentence
   and misses the point is still blocking
@@ -166,6 +217,7 @@ The CLI moves, and a moved flag used to mean a lane that died silently into its 
 | `CL_WRITABLE_ROOTS` | | needed when `CL_REPO` is a linked worktree |
 | `CL_NET` | | `1` grants the sandbox network for test gates |
 | `CL_LOCK_TIMEOUT` | `7200` | seconds to wait for the writer lock |
+| `CL_GIT_GUARD` | `1` | `0` disables the Claude Code git publication hook for that session |
 
 ## Field notes
 
@@ -198,7 +250,7 @@ Run `cl_selfreview` on day one: Codex tearing this harness apart before you trus
 
 ```bash
 ./gates.sh             # smoke (bash + zsh) + shellcheck + manifest validation
-bash test/smoke.sh     # 53 assertions, no Codex quota spent
+bash test/smoke.sh     # 92 assertions, no Codex quota spent
 ```
 
 The suite drives the whole loop against a stub `codex` that enforces the invocation
